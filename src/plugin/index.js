@@ -1,15 +1,20 @@
 // Simkl Timeline engine.
 //
 // The Pebble app starts this script fresh for every request, so nothing lives in variables:
-// everything that must survive is in localStorage (shared with PKJS) or Pebble.secureStorage
-// (tokens and the device code, private to this plugin).
+// everything that must survive is in Pebble.secureStorage, private to this plugin.
+//
+// Not localStorage: it is shared with PKJS, and on Android PKJS works on a copy of it that it
+// writes back when it stops, erasing whatever the plugin stored in the meantime. PKJS gets what
+// the watch shows from the watch_data action instead.
 //
 // The plugin engine has no timers: the Android app blocks setTimeout and iOS has none. So the
 // plugin never waits. A sync answers 'wait:<ms>' and the config page gets retryAfterMs, and the
 // caller (PKJS or the page) waits before asking again.
 //
-// localStorage, shared with PKJS: settings, account, signin, sync_status, upcoming.
-// localStorage, private:
+// Pebble.secureStorage:
+//   tokens            { access, refresh, expiresAt, scope }
+//   device_code       of the sign-in in progress
+//   settings, account, signin, sync_status, upcoming   what the settings page and the watch show
 //   pins              pin id -> { key, time (ms), hash, deleted? }
 //   plugin.lists      { items: { "tv:123": { kind, simkl, status, title, year, slug } }, pulled: { "tv:watching": true } }
 //   plugin.snapshot   the /sync/activities answer the lists are current as of
@@ -20,11 +25,11 @@
 //   plugin.sync       progress of the sync in flight
 //   plugin.pollNext   ms before which signin_poll does not call Simkl
 //   plugin.refreshLock  ms until which one invocation owns the token refresh
-// Pebble.secureStorage: tokens { access, refresh, expiresAt, scope }, device_code.
+//   plugin.syncLock   { owner, until } of the sync that runs now
 
 var CLIENT_ID = '0c2ba84016dd0ef96cb51b3dd5d77eaff1597be12102c28f089e08e3c846235e';
 var APP_NAME = 'simkl-timeline';
-var APP_VERSION = '1.0.0';
+var APP_VERSION = '1.1.0';
 var USER_AGENT = APP_NAME + '/' + APP_VERSION;
 var API_HOST = 'api.simkl.com';
 var CDN_HOST = 'data.simkl.in';
@@ -66,7 +71,7 @@ var PERMISSION_SPEC = {
   cdn: { name: 'Internet/data.simkl.in', domain: CDN_HOST },
   timeline: { name: 'Timeline', domain: null },
 };
-var UPDATE_MESSAGE = 'Timeline pins need the Pebble app version 1.18 or later. Update it, then turn on plugins.';
+var UPDATE_MESSAGE = 'Timeline pins need the Pebble app version 1.18 or later. Update the Pebble app.';
 
 // ---------------------------------------------------------------- errors
 
@@ -117,8 +122,8 @@ function waitOf(answer) {
 
 // ---------------------------------------------------------------- storage
 
-function load(key, fallback) {
-  var raw = localStorage.getItem(key);
+async function load(key, fallback) {
+  var raw = await Pebble.secureStorage.getItem(key);
   if (raw === null || raw === undefined) return fallback;
   try {
     var value = JSON.parse(raw);
@@ -128,12 +133,12 @@ function load(key, fallback) {
   }
 }
 
-function save(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+async function save(key, value) {
+  await Pebble.secureStorage.setItem(key, JSON.stringify(value));
 }
 
-function drop(key) {
-  localStorage.removeItem(key);
+async function drop(key) {
+  await Pebble.secureStorage.removeItem(key);
 }
 
 async function readTokens() {
@@ -166,8 +171,8 @@ function defaultSettings() {
   };
 }
 
-function getSettings() {
-  var stored = load('settings', null);
+async function getSettings() {
+  var stored = await load('settings', null);
   return stored ? validateSettings(stored, defaultSettings()).value || defaultSettings() : defaultSettings();
 }
 
@@ -377,7 +382,7 @@ async function http(cx, o) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(o.json);
   }
-  renewLock(cx);
+  await renewLock(cx);
   var r;
   try {
     // No timeout of our own: the host times requests out, and the action itself at 20 s.
@@ -446,10 +451,10 @@ async function refreshTokens(cx, staleAccess) {
   var before = await readTokens();
   if (!before) throw new PluginError('AUTH_REQUIRED', 'Sign in to Simkl to see upcoming episodes.');
   if (before.access !== staleAccess) return before;
-  if (load('plugin.refreshLock', 0) > Date.now()) {
+  if (await load('plugin.refreshLock', 0) > Date.now()) {
     throw busyError('Simkl Timeline is renewing its Simkl sign-in. Try again in a moment.', LOCK_RETRY_MS, false);
   }
-  save('plugin.refreshLock', Date.now() + 20000);
+  await save('plugin.refreshLock', Date.now() + 20000);
   try {
     var r = await http(cx, { host: API_HOST, path: '/oauth2/token', method: 'POST', form: { grant_type: 'refresh_token', refresh_token: before.refresh } });
     if (r.status === 200 && r.json && r.json.access_token) {
@@ -466,57 +471,60 @@ async function refreshTokens(cx, staleAccess) {
     }
     throw failure(r, API_HOST);
   } finally {
-    drop('plugin.refreshLock');
+    await drop('plugin.refreshLock');
   }
 }
 
 // ---------------------------------------------------------------- account state
 
-function liveRecords() {
-  var pins = load('pins', {});
+async function liveRecords() {
+  var pins = await load('pins', {});
   return Object.keys(pins).filter(function (id) { return !pins[id].deleted; });
 }
 
-function writeStatus(ok, state, message, extra) {
+async function writeStatus(ok, state, message, extra) {
+  var previous = await load('sync_status', null);
   var status = {
     at: Date.now(),
     ok: ok,
     state: state,
     message: message,
-    listsCheckedAt: load('plugin.listsAt', 0),
-    pinCount: liveRecords().length,
+    lastOkAt: ok ? Date.now() : (previous && previous.lastOkAt) || 0,
+    listsCheckedAt: await load('plugin.listsAt', 0),
+    pinCount: (await liveRecords()).length,
   };
   if (extra) {
     for (var k in extra) status[k] = extra[k];
   }
-  save('sync_status', status);
+  await save('sync_status', status);
   return status;
 }
 
 // What belongs to one Simkl account. Pin records stay: their deleted ids must not be reused.
-function wipeUserData() {
-  ['account', 'signin', 'upcoming', 'plugin.lists', 'plugin.snapshot', 'plugin.listsAt', 'plugin.sync', 'plugin.pollNext',
-    'plugin.cal.tv', 'plugin.cal.anime', 'plugin.watched'].forEach(drop);
+async function wipeUserData() {
+  var keys = ['account', 'signin', 'upcoming', 'plugin.lists', 'plugin.snapshot', 'plugin.listsAt', 'plugin.sync', 'plugin.pollNext',
+    'plugin.cal.tv', 'plugin.cal.anime', 'plugin.watched'];
+  for (var i = 0; i < keys.length; i++) await drop(keys[i]);
 }
 
 async function clearCredentials() {
   await Pebble.secureStorage.removeItem('tokens');
   await Pebble.secureStorage.removeItem('device_code');
-  wipeUserData();
-  writeStatus(false, 'signed_out', 'Sign in to Simkl to see upcoming episodes.');
+  await wipeUserData();
+  await writeStatus(false, 'signed_out', 'Sign in to Simkl to see upcoming episodes.', { lastOkAt: 0 });
 }
 
 // Sets `deleted` on the stored records, reading them again first so a concurrent writer's changes survive.
-function markDeleted(ids) {
-  var pins = load('pins', {});
+async function markDeleted(ids) {
+  var pins = await load('pins', {});
   ids.forEach(function (id) { if (pins[id]) pins[id].deleted = true; });
-  save('pins', pins);
+  await save('pins', pins);
 }
 
 async function deleteAllPins() {
   var done = [];
   var failed = null;
-  var ids = liveRecords();
+  var ids = await liveRecords();
   for (var i = 0; i < ids.length; i++) {
     try {
       if (hasPinApi()) await Pebble.deleteTimelinePin(ids[i]);
@@ -525,7 +533,7 @@ async function deleteAllPins() {
       failed = failed || e;
     }
   }
-  markDeleted(done);
+  await markDeleted(done);
   return failed;
 }
 
@@ -533,7 +541,7 @@ async function deleteAllPins() {
 
 async function startSignin(cx) {
   await requirePermissions(['simkl']);
-  var live = load('signin', null);
+  var live = await load('signin', null);
   var code = await Pebble.secureStorage.getItem('device_code');
   if (live && code && live.expiresAt - Date.now() > MINUTE) return live;
   var r = await http(cx, { host: API_HOST, path: '/oauth2/device', method: 'POST', form: { scope: 'media:read media:write' } });
@@ -548,15 +556,15 @@ async function startSignin(cx) {
     interval: interval,
   };
   await Pebble.secureStorage.setItem('device_code', j.device_code);
-  save('signin', signin);
-  save('plugin.pollNext', Date.now() + interval * 1000);
+  await save('signin', signin);
+  await save('plugin.pollNext', Date.now() + interval * 1000);
   return signin;
 }
 
 async function endSignin() {
   await Pebble.secureStorage.removeItem('device_code');
-  drop('signin');
-  drop('plugin.pollNext');
+  await drop('signin');
+  await drop('plugin.pollNext');
 }
 
 function hasScope(scope, wanted) {
@@ -566,7 +574,7 @@ function hasScope(scope, wanted) {
 // 'pending' | 'approved' | 'expired'; throws for everything else.
 async function pollSignin(cx) {
   await requirePermissions(['simkl']);
-  var signin = load('signin', null);
+  var signin = await load('signin', null);
   var deviceCode = await Pebble.secureStorage.getItem('device_code');
   if (!signin || !deviceCode) return 'expired';
   // Simkl never says no, so our own deadline is the only end for a user who declined.
@@ -574,7 +582,7 @@ async function pollSignin(cx) {
     await endSignin();
     return 'expired';
   }
-  if (Date.now() < load('plugin.pollNext', 0)) return 'pending';
+  if (Date.now() < await load('plugin.pollNext', 0)) return 'pending';
   var r;
   try {
     r = await http(cx, { host: API_HOST, path: '/oauth2/token', method: 'POST', form: { grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: deviceCode } });
@@ -583,7 +591,7 @@ async function pollSignin(cx) {
     if (isBusy(e)) return 'pending';
     throw e;
   } finally {
-    save('plugin.pollNext', Date.now() + signin.interval * 1000);
+    await save('plugin.pollNext', Date.now() + signin.interval * 1000);
   }
   var error = r.json && r.json.error;
   if (r.status === 200 && r.json && r.json.access_token) return finishSignin(cx, r.json);
@@ -591,8 +599,8 @@ async function pollSignin(cx) {
   if (error === 'slow_down') {
     // The rejected attempt re-armed Simkl's timer, so the wait has to be real.
     signin.interval += 5;
-    save('signin', signin);
-    save('plugin.pollNext', Date.now() + signin.interval * 1000);
+    await save('signin', signin);
+    await save('plugin.pollNext', Date.now() + signin.interval * 1000);
     return 'pending';
   }
   if (error === 'expired_token') {
@@ -633,14 +641,14 @@ async function finishSignin(cx, json) {
     await endSignin();
     throw isPluginError(e) ? new PluginError(e.code, 'Signed in, but could not read your Simkl name. ' + e.message + ' Start the sign-in again.', e.state) : e;
   }
-  var previous = load('account', null);
+  var previous = await load('account', null);
   if (previous && previous.name !== name) {
     await deleteAllPins();
-    wipeUserData();
+    await wipeUserData();
   }
   await writeTokens(tokens);
   await endSignin();
-  save('account', { name: name });
+  await save('account', { name: name });
   return 'approved';
 }
 
@@ -650,14 +658,15 @@ async function signOut(cx) {
   if (tokens) revoked = await revokeToken(cx, tokens.refresh || tokens.access);
   var failed = await deleteAllPins();
   await clearCredentials();
-  ['plugin.movies', 'plugin.refreshLock'].forEach(drop);
+  await drop('plugin.movies');
+  await drop('plugin.refreshLock');
   return { ok: !failed, revoked: revoked, error: failed ? 'Some timeline pins could not be removed.' : undefined };
 }
 
 // ---------------------------------------------------------------- watchlist
 
-function loadLists() {
-  var lists = load('plugin.lists', null);
+async function loadLists() {
+  var lists = await load('plugin.lists', null);
   return lists && lists.items ? lists : { items: {}, pulled: {} };
 }
 
@@ -703,10 +712,10 @@ function missingSlices(lists, settings) {
   return wantedSlices(settings).filter(function (s) { return !lists.pulled[s.kind + ':' + s.status]; });
 }
 
-function listsGate(reason, settings) {
-  var lists = loadLists();
-  if (!load('plugin.snapshot', null) || missingSlices(lists, settings).length) return true;
-  var age = Date.now() - load('plugin.listsAt', 0);
+async function listsGate(reason, settings) {
+  var lists = await loadLists();
+  if (!await load('plugin.snapshot', null) || missingSlices(lists, settings).length) return true;
+  var age = Date.now() - await load('plugin.listsAt', 0);
   return !(age >= 0 && age < LISTS_RECHECK_MS[reason]);
 }
 
@@ -714,13 +723,13 @@ function listsGate(reason, settings) {
 // saved only after every pull succeeded; removals are found by diffing the ids.
 async function runListOp(cx, st, settings) {
   var op = st.ops[0];
-  var lists = loadLists();
+  var lists = await loadLists();
   var r;
   if (op.op === 'plan') {
     r = await simkl(cx, 'GET', '/sync/activities');
     if (!r.json || typeof r.json !== 'object') throw new PluginError('UNKNOWN', 'Simkl answered the activities check with nothing.');
     st.A = r.json;
-    var snapshot = load('plugin.snapshot', null);
+    var snapshot = await load('plugin.snapshot', null);
     // Slices that are switched off are no longer kept current, so they must be pulled again if switched on.
     Object.keys(lists.pulled).forEach(function (k) {
       var parts = k.split(':');
@@ -730,7 +739,7 @@ async function runListOp(cx, st, settings) {
       var it = lists.items[k];
       if (!sliceWanted(settings, it.kind, it.status)) delete lists.items[k];
     });
-    save('plugin.lists', lists);
+    await save('plugin.lists', lists);
     var next = [];
     var enabled = KINDS.filter(function (kind) { return typeEnabled(settings, kind); });
     if (snapshot && st.A.all !== snapshot.all) {
@@ -772,30 +781,30 @@ async function runListOp(cx, st, settings) {
       if (!current[k]) delete lists.items[k];
     });
   }
-  save('plugin.lists', lists);
+  await save('plugin.lists', lists);
   st.ops.shift();
 }
 
 async function listsStep(cx, prog, settings) {
   if (!prog.lists) {
-    if (!listsGate(prog.reason, settings)) return 'done';
+    if (!await listsGate(prog.reason, settings)) return 'done';
     prog.lists = { ops: [{ op: 'plan' }] };
-    saveProgress(prog);
+    await saveProgress(prog);
   }
   var st = prog.lists;
   while (st.ops.length) {
     if (Date.now() > cx.stepEnd) return 'more';
     await runListOp(cx, st, settings);
-    saveProgress(prog);
+    await saveProgress(prog);
   }
-  save('plugin.snapshot', st.A);
-  save('plugin.listsAt', Date.now());
+  await save('plugin.snapshot', st.A);
+  await save('plugin.listsAt', Date.now());
   return 'done';
 }
 
-function listIds(settings, kind) {
+function listIds(lists, settings, kind) {
   var ids = {};
-  var items = loadLists().items;
+  var items = lists.items;
   Object.keys(items).forEach(function (k) {
     var it = items[k];
     if (it.kind === kind && sliceWanted(settings, kind, it.status)) ids[it.simkl] = it;
@@ -835,7 +844,7 @@ function covers(cache, ids) {
 }
 
 async function fetchCalendar(cx, kind, ids) {
-  var cache = load('plugin.cal.' + kind, null);
+  var cache = await load('plugin.cal.' + kind, null);
   var usable = cache && covers(cache, ids);
   if (usable && cache.fetchedAt <= Date.now() && Date.now() - cache.fetchedAt < CALENDAR_MAX_AGE_MS) return;
   var headers = {};
@@ -844,12 +853,12 @@ async function fetchCalendar(cx, kind, ids) {
   var r = await http(cx, { host: CDN_HOST, path: CALENDAR_PATH + (kind === 'tv' ? 'tv' : 'anime') + '.json', headers: headers });
   if (r.status === 304 && usable) {
     cache.fetchedAt = Date.now();
-    save('plugin.cal.' + kind, cache);
+    await save('plugin.cal.' + kind, cache);
     return;
   }
   if (r.status !== 200 || !r.json) throw failure(r, CDN_HOST);
   var compact = compactCalendar(r.json, ids);
-  save('plugin.cal.' + kind, {
+  await save('plugin.cal.' + kind, {
     fetchedAt: Date.now(),
     lastModified: header(r, 'last-modified') || '',
     ids: Object.keys(ids).map(Number),
@@ -871,13 +880,14 @@ function defer(prog, e) {
 
 async function calendarStep(cx, prog, settings) {
   prog.cal = prog.cal || {};
+  var lists = await loadLists();
   var kinds = ['tv', 'anime'];
   for (var i = 0; i < kinds.length; i++) {
     var kind = kinds[i];
     if (prog.cal[kind]) continue;
-    var ids = typeEnabled(settings, kind) ? listIds(settings, kind) : {};
+    var ids = typeEnabled(settings, kind) ? listIds(lists, settings, kind) : {};
     if (!Object.keys(ids).length) {
-      drop('plugin.cal.' + kind);
+      await drop('plugin.cal.' + kind);
       prog.cal[kind] = true;
       continue;
     }
@@ -889,7 +899,7 @@ async function calendarStep(cx, prog, settings) {
       defer(prog, asPluginError(e));
     }
     prog.cal[kind] = true;
-    saveProgress(prog);
+    await saveProgress(prog);
   }
   return 'done';
 }
@@ -913,9 +923,9 @@ async function resolveCountry(settings) {
   return 'US';
 }
 
-function movieCandidates(settings) {
+function movieCandidates(lists, settings) {
   var year = new Date().getFullYear();
-  var ids = listIds(settings, 'movie');
+  var ids = listIds(lists, settings, 'movie');
   var out = [];
   Object.keys(ids).forEach(function (id) {
     var it = ids[id];
@@ -968,12 +978,12 @@ async function fetchMovie(cx, id, cc) {
 }
 
 async function moviesStep(cx, prog, settings) {
-  var cache = load('plugin.movies', {});
+  var cache = await load('plugin.movies', {});
   if (!settings.types.movies) {
-    drop('plugin.movies');
+    await drop('plugin.movies');
     return 'done';
   }
-  var candidates = movieCandidates(settings);
+  var candidates = movieCandidates(await loadLists(), settings);
   var keep = {};
   candidates.forEach(function (it) { keep[it.simkl] = true; });
   Object.keys(cache).forEach(function (id) { if (!keep[id]) delete cache[id]; });
@@ -983,7 +993,7 @@ async function moviesStep(cx, prog, settings) {
   });
   while (todo.length) {
     if (Date.now() > cx.stepEnd) {
-      save('plugin.movies', cache);
+      await save('plugin.movies', cache);
       return 'more';
     }
     var chunk = todo.splice(0, MOVIE_PARALLEL);
@@ -1006,11 +1016,11 @@ async function moviesStep(cx, prog, settings) {
         prog.movieFailures = (prog.movieFailures || 0) + 1;
       }
     });
-    save('plugin.movies', cache);
-    saveProgress(prog);
+    await save('plugin.movies', cache);
+    await saveProgress(prog);
     if (stop) throw stop;
   }
-  save('plugin.movies', cache);
+  await save('plugin.movies', cache);
   return 'done';
 }
 
@@ -1060,7 +1070,7 @@ function buildItems(env) {
   ['tv', 'anime'].forEach(function (kind) {
     var cal = env.cal[kind];
     if (!cal || !typeEnabled(s, kind)) return;
-    var ids = listIds(s, kind);
+    var ids = listIds(env.lists, s, kind);
     cal.entries.forEach(function (e) {
       var listed = ids[e.i];
       if (!listed) return;
@@ -1089,7 +1099,7 @@ function buildItems(env) {
   });
 
   if (s.types.movies) {
-    var movies = listIds(s, 'movie');
+    var movies = listIds(env.lists, s, 'movie');
     var kinds = s.movieRelease === 'both' ? ['cinema', 'digital'] : [s.movieRelease];
     Object.keys(movies).forEach(function (id) {
       var listed = movies[id];
@@ -1177,14 +1187,14 @@ function pinPermissionError(e) {
 
 async function reconcilePins(env, items) {
   var s = env.settings;
-  var pins = load('pins', {});
+  var pins = await load('pins', {});
   var wanted = {};
   items.forEach(function (item) { wanted[item.key] = item; });
   var live = {};
   Object.keys(pins).forEach(function (id) {
     if (!pins[id].deleted) live[pins[id].key] = id;
   });
-  var present = { tv: listIds(s, 'tv'), anime: listIds(s, 'anime'), movie: listIds(s, 'movie') };
+  var present = { tv: listIds(env.lists, s, 'tv'), anime: listIds(env.lists, s, 'anime'), movie: listIds(env.lists, s, 'movie') };
   try {
     for (var id in pins) {
       var rec = pins[id];
@@ -1216,30 +1226,31 @@ async function reconcilePins(env, items) {
     throw pinPermissionError(e);
   } finally {
     // mark_watched may have deleted a pin while this ran; its flag must not be overwritten.
-    var stored = load('pins', {});
+    var stored = await load('pins', {});
     Object.keys(stored).forEach(function (pid) {
       if (stored[pid].deleted && pins[pid]) pins[pid].deleted = true;
     });
     Object.keys(pins).forEach(function (pid) {
       if (pins[pid].time < env.now - PIN_KEEP_MS) delete pins[pid];
     });
-    save('pins', pins);
+    await save('pins', pins);
   }
   return live;
 }
 
 async function pinsStep(cx, prog, settings) {
   var now = Date.now();
-  var watched = load('plugin.watched', {});
+  var watched = await load('plugin.watched', {});
   Object.keys(watched).forEach(function (k) { if (watched[k] < now - PIN_KEEP_MS) delete watched[k]; });
-  save('plugin.watched', watched);
+  await save('plugin.watched', watched);
   var env = {
     now: now,
     settings: settings,
     cc: prog.cc,
     watched: watched,
-    cal: { tv: load('plugin.cal.tv', null), anime: load('plugin.cal.anime', null) },
-    movies: load('plugin.movies', {}),
+    lists: await loadLists(),
+    cal: { tv: await load('plugin.cal.tv', null), anime: await load('plugin.cal.anime', null) },
+    movies: await load('plugin.movies', {}),
   };
   var items = buildItems(env);
   var live = await reconcilePins(env, items);
@@ -1250,14 +1261,14 @@ async function pinsStep(cx, prog, settings) {
       pinId: live[i.key] || '',
     };
   });
-  save('upcoming', { generatedAt: now, items: upcoming });
+  await save('upcoming', { generatedAt: now, items: upcoming });
   return 'done';
 }
 
 // ---------------------------------------------------------------- sync
 
-function saveProgress(prog) {
-  save('plugin.sync', prog);
+async function saveProgress(prog) {
+  await save('plugin.sync', prog);
 }
 
 var STEPS = { lists: listsStep, calendar: calendarStep, movies: moviesStep, pins: pinsStep };
@@ -1268,36 +1279,38 @@ function makeContext(full) {
 
 // One sync at a time: two runs would interleave read-modify-write of the pin records, and a lost
 // `deleted` flag makes the next insert reuse an id the Pebble app ignores for good.
-function tryLock(owner) {
-  var held = load('plugin.syncLock', null);
+async function tryLock(owner) {
+  var held = await load('plugin.syncLock', null);
   if (held && held.until > Date.now() && held.owner !== owner) return false;
-  save('plugin.syncLock', { owner: owner, until: Date.now() + LOCK_TTL_MS });
-  return true;
+  await save('plugin.syncLock', { owner: owner, until: Date.now() + LOCK_TTL_MS });
+  // Another invocation may have checked at the same moment; the last write wins, so read it back.
+  var mine = await load('plugin.syncLock', null);
+  return !!mine && mine.owner === owner;
 }
 
-function renewLock(cx) {
-  if (cx.owner) save('plugin.syncLock', { owner: cx.owner, until: Date.now() + LOCK_TTL_MS });
+async function renewLock(cx) {
+  if (cx.owner) await save('plugin.syncLock', { owner: cx.owner, until: Date.now() + LOCK_TTL_MS });
 }
 
-function releaseLock(owner) {
-  var held = load('plugin.syncLock', null);
-  if (held && held.owner === owner) drop('plugin.syncLock');
+async function releaseLock(owner) {
+  var held = await load('plugin.syncLock', null);
+  if (held && held.owner === owner) await drop('plugin.syncLock');
 }
 
 // Never waits for the lock: the caller asks again after LOCK_RETRY_MS.
-function acquireLock(cx, owner) {
-  if (!tryLock(owner)) return false;
+async function acquireLock(cx, owner) {
+  if (!await tryLock(owner)) return false;
   cx.owner = owner;
   return true;
 }
 
 async function withLock(cx, fn) {
   var owner = newOwner();
-  if (!acquireLock(cx, owner)) throw busyError('A sync is running. Try again in a moment.', LOCK_RETRY_MS, false);
+  if (!await acquireLock(cx, owner)) throw busyError('A sync is running. Try again in a moment.', LOCK_RETRY_MS, false);
   try {
     return await fn();
   } finally {
-    releaseLock(owner);
+    await releaseLock(owner);
     cx.owner = null;
   }
 }
@@ -1306,35 +1319,35 @@ function newOwner() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-function statusFor(e) {
-  return writeStatus(false, e.state, e.message);
+async function statusFor(e) {
+  return await writeStatus(false, e.state, e.message);
 }
 
 // One invocation of the sync: 'done'; 'more' when work is left and the caller should call again
 // at once; or 'wait:<ms>' when it should call again after that long.
 async function syncOnce(reason, cx) {
   var owner = newOwner();
-  if (!acquireLock(cx, owner)) return waitAnswer(LOCK_RETRY_MS);
+  if (!await acquireLock(cx, owner)) return waitAnswer(LOCK_RETRY_MS);
   try {
     return await runSync(reason, cx);
   } finally {
-    releaseLock(owner);
+    await releaseLock(owner);
     cx.owner = null;
   }
 }
 
 async function runSync(reason, cx) {
-  var settings = getSettings();
+  var settings = await getSettings();
   var prog = null;
   try {
     requirePinApi();
     await requirePermissions(['simkl', 'cdn', 'timeline']);
-    if (!load('account', null)) throw new PluginError('AUTH_REQUIRED', 'Sign in to Simkl to see upcoming episodes.');
+    if (!await load('account', null)) throw new PluginError('AUTH_REQUIRED', 'Sign in to Simkl to see upcoming episodes.');
     if (reason !== 'scheduled' && !(await readTokens())) {
       await clearCredentials();
       throw new PluginError('AUTH_REQUIRED', 'Sign in to Simkl to see upcoming episodes.');
     }
-    prog = cx.fresh ? null : load('plugin.sync', null);
+    prog = cx.fresh ? null : await load('plugin.sync', null);
     cx.fresh = false; // a full run starts over once, then continues its own progress
     var age = prog ? Date.now() - prog.startedAt : 0;
     if (!prog || prog.reason !== reason || age > STALE_RUN_MS || age < 0) {
@@ -1345,21 +1358,21 @@ async function runSync(reason, cx) {
         i: 0,
         cc: await resolveCountry(settings),
       };
-      saveProgress(prog);
+      await saveProgress(prog);
     }
     while (prog.i < prog.steps.length) {
       if (prog.i > 0 && Date.now() > cx.stepEnd) return 'more';
-      renewLock(cx);
+      await renewLock(cx);
       if ((await STEPS[prog.steps[prog.i]](cx, prog, settings)) === 'more') return 'more';
       prog.i++;
       prog.busy = 0;
-      saveProgress(prog);
+      await saveProgress(prog);
     }
-    drop('plugin.sync');
+    await drop('plugin.sync');
     if (prog.deferred) throw new PluginError(prog.deferred.code, prog.deferred.message, prog.deferred.state);
-    var pins = liveRecords().length;
+    var pins = (await liveRecords()).length;
     var note = prog.movieFailures ? ' ' + prog.movieFailures + ' movie dates could not be checked.' : '';
-    writeStatus(true, 'ok', pins + (pins === 1 ? ' item' : ' items') + ' on your timeline.' + note);
+    await writeStatus(true, 'ok', pins + (pins === 1 ? ' item' : ' items') + ' on your timeline.' + note);
     return 'done';
   } catch (e) {
     var err = asPluginError(e);
@@ -1368,15 +1381,15 @@ async function runSync(reason, cx) {
       var tries = prog.busy || 0;
       if (!err.counts || tries < BACKOFF_MS.length) {
         if (err.counts) prog.busy = tries + 1;
-        saveProgress(prog);
+        await saveProgress(prog);
         return waitAnswer(err.retryAfterMs || BACKOFF_MS[tries]);
       }
       prog.busy = 0;
-      saveProgress(prog);
+      await saveProgress(prog);
       err = new PluginError('UNKNOWN', err.message);
     }
-    if (isFatal(err)) drop('plugin.sync');
-    statusFor(err);
+    if (isFatal(err)) await drop('plugin.sync');
+    await statusFor(err);
     throw err;
   }
 }
@@ -1394,7 +1407,7 @@ async function syncFully(reason, resume) {
   } catch (e) {
     // syncOnce stored the failure in sync_status.
   }
-  return { status: load('sync_status', null), retryAfterMs: waitOf(answer) || undefined };
+  return { status: await load('sync_status', null), retryAfterMs: waitOf(answer) || undefined };
 }
 
 // ---------------------------------------------------------------- mark watched
@@ -1438,11 +1451,11 @@ async function markWatched(cx, args) {
   }
   var keys = keysFor(args);
   var known = {};
-  var upcoming = load('upcoming', null);
+  var upcoming = await load('upcoming', null);
   ((upcoming && upcoming.items) || []).forEach(function (i) {
     keysForItem(i).forEach(function (k) { known[k] = i.time * 1000; });
   });
-  var pins = load('pins', {});
+  var pins = await load('pins', {});
   var targets = Object.keys(pins).filter(function (id) { return !pins[id].deleted && keys.indexOf(pins[id].key) >= 0; });
   targets.forEach(function (id) { known[pins[id].key] = pins[id].time; });
   var failed = null;
@@ -1456,16 +1469,16 @@ async function markWatched(cx, args) {
     }
   }
   // Everything is read again right before it is written: a sync may have run meanwhile.
-  markDeleted(done);
-  var watched = load('plugin.watched', {});
+  await markDeleted(done);
+  var watched = await load('plugin.watched', {});
   keys.forEach(function (k) { watched[k] = known[k] || Date.now(); });
-  save('plugin.watched', watched);
-  upcoming = load('upcoming', null);
+  await save('plugin.watched', watched);
+  upcoming = await load('upcoming', null);
   if (upcoming && upcoming.items) {
     upcoming.items = upcoming.items.filter(function (i) {
       return !keysForItem(i).some(function (k) { return keys.indexOf(k) >= 0; });
     });
-    save('upcoming', upcoming);
+    await save('upcoming', upcoming);
   }
   if (failed) throw pinPermissionError(failed);
   return 'Marked watched';
@@ -1473,6 +1486,19 @@ async function markWatched(cx, args) {
 
 function keysForItem(i) {
   return keysFor({ kind: i.kind, simkl: i.simkl, season: i.season === null ? undefined : i.season, episode: i.episode === null ? undefined : i.episode });
+}
+
+// Everything the watch app shows, as JSON: PKJS can't read the plugin's storage.
+async function watchData() {
+  var settings = await getSettings();
+  var upcoming = await load('upcoming', null);
+  return JSON.stringify({
+    account: await load('account', null),
+    signin: await publicSignin(),
+    status: await load('sync_status', null),
+    syncTimes: settings.syncTimes,
+    items: (upcoming && upcoming.items) || [],
+  });
 }
 
 // ---------------------------------------------------------------- handlers
@@ -1500,6 +1526,9 @@ Pebble.registerActionHandler(async function (request, respond) {
       case 'signin_poll':
         respond.ok({ text: await pollSignin(makeContext(false)) });
         return;
+      case 'watch_data':
+        respond.ok({ text: await watchData() });
+        return;
       default:
         respond.error('INVALID_REQUEST', 'Unknown action.');
     }
@@ -1509,7 +1538,7 @@ Pebble.registerActionHandler(async function (request, respond) {
 });
 
 async function publicSignin() {
-  var signin = load('signin', null);
+  var signin = await load('signin', null);
   if (signin && Date.now() >= signin.expiresAt) {
     await endSignin();
     return null;
@@ -1523,21 +1552,21 @@ Pebble.registerConfigHandler(async function (message, respond) {
     switch (type) {
       case 'state':
         respond({
-          account: load('account', null),
+          account: await load('account', null),
           signin: await publicSignin(),
-          settings: getSettings(),
-          status: load('sync_status', null),
+          settings: await getSettings(),
+          status: await load('sync_status', null),
           permissions: await permissionStates(),
           version: APP_VERSION,
         });
         return;
       case 'saveSettings': {
-        var checked = validateSettings(message.settings, getSettings());
+        var checked = validateSettings(message.settings, await getSettings());
         if (checked.error) {
           respond({ ok: false, error: checked.error });
           return;
         }
-        save('settings', checked.value);
+        await save('settings', checked.value);
         var saved = await syncFully('settings');
         respond({ ok: true, status: saved.status, retryAfterMs: saved.retryAfterMs });
         return;
@@ -1558,7 +1587,7 @@ Pebble.registerConfigHandler(async function (message, respond) {
           return;
         }
         var first = await syncFully('manual');
-        respond({ state: 'approved', account: load('account', null), status: first.status, retryAfterMs: first.retryAfterMs });
+        respond({ state: 'approved', account: await load('account', null), status: first.status, retryAfterMs: first.retryAfterMs });
         return;
       }
       case 'signout':

@@ -102,7 +102,7 @@ static void prv_status_text(char *buf, size_t size, bool *alert) {
   }
   switch (model_state()) {
     case StateSignedOut: snprintf(buf, size, "Signed out"); return;
-    case StateNeedsPlugins: snprintf(buf, size, "Plugins are off"); return;
+    case StateNeedsPlugins: snprintf(buf, size, "Check the Pebble app"); return;
     case StatePermission: snprintf(buf, size, "Permission needed"); return;
     case StateOffline: snprintf(buf, size, "Offline"); return;
     case StateError: snprintf(buf, size, "Sync failed"); return;

@@ -607,7 +607,7 @@
     var message = status && status.message ? status.message : '';
     if (key === 'signed_out') hint = 'Connect your Simkl account above.';
     else if (key === 'permission') hint = (message ? message + ' ' : '') + 'Open the Simkl Timeline page in the Pebble app and allow the permissions it asks for.';
-    else if (key === 'needs_update') hint = 'Update the Pebble app to version 1.18 or later, then turn on plugins in Settings → Plugins.';
+    else if (key === 'needs_update') hint = 'Plugins are on, but timeline pins need the Pebble app version 1.18 or later. Update the Pebble app.';
     else if (key === 'offline') hint = 'Simkl could not be reached. Check your phone\'s internet connection, then tap Sync now.';
     else if (key === 'error') hint = message || 'The last sync failed. Tap Sync now to try again.';
     $('stateHint').textContent = hint;

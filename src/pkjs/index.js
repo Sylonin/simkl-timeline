@@ -1,5 +1,5 @@
 // Bridge between the watch app (AppMessage) and the Simkl Timeline plugin (Pebble.invokeAction).
-// The plugin owns all Simkl logic and writes localStorage; this file only reads it.
+// The plugin owns all Simkl logic and its own storage; this file asks it for what the watch shows.
 var qrcode = require('qrcode-generator');
 
 var PLUGIN_UUID = '4b7b70e6-67aa-4071-a811-2c4f6cfa316f';
@@ -233,16 +233,39 @@ function invoke(action, args, callback) {
   }
 }
 
+// What the plugin last reported through watch_data: { account, signin, status, syncTimes, items }.
+// The plugin's storage is private, and on Android this file's localStorage is a copy that the
+// plugin's writes never reach. The copy kept here shows the last list at once on the next launch.
+var data = load('pkjs.data');
+
+function fetchData(callback) {
+  invoke('watch_data', {}, function (result) {
+    if (result.ok) {
+      try {
+        data = JSON.parse(result.text);
+        save('pkjs.data', data);
+      } catch (e) {
+        result = { ok: false, code: 'UNKNOWN', message: '' };
+      }
+    }
+    callback(result);
+  });
+}
+
 // Maps a failed action result to a watch status: {state, text}.
 function errorToStatus(result) {
   var code = result.code;
   var message = result.message || '';
-  if (code === 'PLUGIN_UNAVAILABLE') return { state: ST_NEEDS_PLUGINS, text: TEXT_PLUGINS };
+  if (code === 'PLUGIN_UNAVAILABLE') {
+    // The plugin runs, but this Pebble app is too old for it: the plugin says so in its status.
+    var why = data && data.status;
+    return { state: ST_NEEDS_PLUGINS, text: why && why.state === 'needs_update' && why.message ? why.message : TEXT_PLUGINS };
+  }
   if (code === 'AUTH_REQUIRED') return { state: ST_SIGNED_OUT, text: TEXT_SIGNED_OUT };
   if (code === 'PERMISSION_DENIED') return { state: ST_PERMISSION, text: message || TEXT_PERMISSION };
   if (code === 'TIMEOUT') return { state: ST_ERROR, text: TEXT_TIMEOUT };
   if (code === 'RATE_LIMITED') return { state: ST_ERROR, text: TEXT_BUSY };
-  var stored = load('sync_status');
+  var stored = data && data.status;
   if (stored && stored.state === 'offline') return { state: ST_OFFLINE, text: message || TEXT_OFFLINE };
   return { state: ST_ERROR, text: message || TEXT_ERROR };
 }
@@ -250,23 +273,20 @@ function errorToStatus(result) {
 // Watch status
 
 function lastSyncSeconds() {
-  var status = load('sync_status');
-  if (status && status.ok && status.at) save('pkjs.lastOk', status.at);
-  var at = load('pkjs.lastOk');
+  var at = data && data.status && data.status.lastOkAt;
   return typeof at === 'number' && at > 0 ? Math.floor(at / 1000) : 0;
 }
 
 function storedStatus() {
-  var account = load('account');
-  var status = load('sync_status');
-  if (!account) return { state: ST_SIGNED_OUT, text: TEXT_SIGNED_OUT };
+  var status = data && data.status;
+  if (!data || !data.account) return { state: ST_SIGNED_OUT, text: TEXT_SIGNED_OUT };
   if (!status) return { state: ST_READY, text: '' };
   var message = status.message || '';
   switch (status.state) {
     case 'signed_out': return { state: ST_SIGNED_OUT, text: TEXT_SIGNED_OUT };
     case 'permission': return { state: ST_PERMISSION, text: message || TEXT_PERMISSION };
     case 'offline': return { state: ST_OFFLINE, text: message || TEXT_OFFLINE };
-    case 'needs_update': return { state: ST_NEEDS_PLUGINS, text: TEXT_PLUGINS };
+    case 'needs_update': return { state: ST_NEEDS_PLUGINS, text: message || TEXT_PLUGINS };
     case 'error': return { state: ST_ERROR, text: message || TEXT_ERROR };
     default: return { state: ST_READY, text: '' };
   }
@@ -283,16 +303,15 @@ function sendStatus(status) {
 
 var sentSchedule = '';
 
-function scheduleMessage() {
-  var settings = load('settings');
-  var times = settings && settings.syncTimes;
-  var t1 = times && typeof times[0] === 'number' ? times[0] : 360;
-  var t2 = times && typeof times[1] === 'number' ? times[1] : -1;
-  return { Cmd: CMD_SCHEDULE, SyncTime1: t1, SyncTime2: t2 };
-}
-
+// Only times the plugin reported: guessed defaults would overwrite the watch's own copy.
 function sendSchedule(onlyIfChanged) {
-  var msg = scheduleMessage();
+  var times = data && data.syncTimes;
+  if (!times) return;
+  var msg = {
+    Cmd: CMD_SCHEDULE,
+    SyncTime1: typeof times[0] === 'number' ? times[0] : 360,
+    SyncTime2: typeof times[1] === 'number' ? times[1] : -1
+  };
   var key = msg.SyncTime1 + ',' + msg.SyncTime2;
   if (onlyIfChanged && key === sentSchedule) return;
   sentSchedule = key;
@@ -309,8 +328,7 @@ function itemFlags(item) {
 }
 
 function itemMessages() {
-  var upcoming = load('upcoming');
-  var items = upcoming && upcoming.items instanceof Array ? upcoming.items.slice(0, MAX_ITEMS) : [];
+  var items = data && data.items instanceof Array ? data.items.slice(0, MAX_ITEMS) : [];
   var messages = [];
   for (var i = 0; i < items.length; i++) {
     var item = items[i];
@@ -388,11 +406,28 @@ function runSync(reason) {
     }
   }
 
+  // Asks the plugin what the run left behind, then shows it. A plugin that hung would not answer
+  // that either.
+  function complete(result) {
+    if (!result.ok && result.code === 'TIMEOUT') {
+      finish(errorToStatus(result));
+      return;
+    }
+    fetchData(function () {
+      if (!result.ok) {
+        finish(errorToStatus(result));
+        return;
+      }
+      var stored = storedStatus();
+      finish(stored.state === ST_SIGNED_OUT ? { state: ST_READY, text: '' } : stored);
+    });
+  }
+
   function step() {
     calls++;
     invoke('sync', { reason: reason }, function (result) {
       if (!result.ok) {
-        finish(errorToStatus(result));
+        complete(result);
         return;
       }
       // 'more': call again now. 'wait:<ms>': the plugin can't wait itself (no timers there), so we do.
@@ -403,8 +438,7 @@ function runSync(reason) {
         else step();
         return;
       }
-      var stored = storedStatus();
-      finish(stored.state === ST_SIGNED_OUT ? { state: ST_READY, text: '' } : stored);
+      complete(result);
     });
   }
 
@@ -462,27 +496,31 @@ function startSignin() {
       signinFailure(result);
       return;
     }
-    var signin = load('signin');
-    if (!signin || !signin.uriComplete) {
-      signinResult(2, 'Could not start sign-in. Try again.');
-      return;
-    }
-    var qr;
-    try {
-      qr = makeQr(signin.uriComplete);
-    } catch (e) {
-      signinResult(2, 'Could not make the QR code. Use the code instead.');
-      return;
-    }
-    enqueue([{
-      Cmd: CMD_SIGNIN_CODE,
-      Code: truncateUtf8(signin.userCode || result.text, 24),
-      Expires: Math.floor(signin.expiresAt / 1000),
-      QrSize: qr.size,
-      QrData: qr.data
-    }]);
-    var interval = Math.max(1, signin.interval || 5);
-    pollSignin(generation, signin.expiresAt, interval, 0);
+    // The code's link and timings are in the plugin's storage.
+    fetchData(function () {
+      if (generation !== signinGeneration) return;
+      var signin = data && data.signin;
+      if (!signin || !signin.uriComplete) {
+        signinResult(2, 'Could not start sign-in. Try again.');
+        return;
+      }
+      var qr;
+      try {
+        qr = makeQr(signin.uriComplete);
+      } catch (e) {
+        signinResult(2, 'Could not make the QR code. Use the code instead.');
+        return;
+      }
+      enqueue([{
+        Cmd: CMD_SIGNIN_CODE,
+        Code: truncateUtf8(signin.userCode || result.text, 24),
+        Expires: Math.floor(signin.expiresAt / 1000),
+        QrSize: qr.size,
+        QrData: qr.data
+      }]);
+      var interval = Math.max(1, signin.interval || 5);
+      pollSignin(generation, signin.expiresAt, interval, 0);
+    });
   });
 }
 
@@ -499,9 +537,11 @@ function pollSignin(generation, expiresAt, interval, failures) {
       if (result.ok && result.text === 'pending') {
         pollSignin(generation, expiresAt, interval, 0);
       } else if (result.ok && result.text === 'approved') {
-        var account = load('account');
-        signinResult(0, account && account.name ? 'Signed in as ' + account.name : 'Signed in');
-        requestSync('manual', true);
+        fetchData(function () {
+          var account = data && data.account;
+          signinResult(0, account && account.name ? 'Signed in as ' + account.name : 'Signed in');
+          requestSync('manual', true);
+        });
       } else if (result.ok && result.text === 'expired') {
         signinResult(1, 'The code expired. Try again.');
       } else if (!result.ok && result.code !== 'AUTH_REQUIRED' && result.code !== 'PLUGIN_UNAVAILABLE' &&
@@ -524,7 +564,7 @@ function markWatched(payload) {
   invoke('mark_watched', args, function (result) {
     if (result.ok) {
       enqueue([{ Cmd: CMD_RESULT, State: 0, Text: truncateUtf8(result.text || 'Marked watched', 96) }]);
-      sendItems(false);
+      fetchData(function () { sendItems(false); });
       return;
     }
     var status = errorToStatus(result);
@@ -539,14 +579,24 @@ function markWatched(payload) {
 
 function onHello(payload) {
   var wakeup = payload.Reason === 1;
-  sendSchedule(false);
   if (!pluginAvailable()) {
     sendStatus({ state: ST_NEEDS_PLUGINS, text: TEXT_PLUGINS });
     return;
   }
-  sendStatus(storedStatus());
-  sendItems(wakeup);
-  requestSync(wakeup ? 'scheduled' : 'open', false);
+  // The last list at once; the plugin's answer replaces it.
+  if (data) {
+    sendSchedule(false);
+    sendStatus(storedStatus());
+    sendItems(wakeup);
+  }
+  fetchData(function (result) {
+    if (result.ok) {
+      sendSchedule(true);
+      sendStatus(storedStatus());
+      sendItems(false);
+    }
+    requestSync(wakeup ? 'scheduled' : 'open', false);
+  });
 }
 
 function onSync(payload) {
@@ -557,13 +607,19 @@ function onSync(payload) {
 // The settings page changes things the open watch app shows: the account, the list after a
 // sync, the daily sync times. It asks for a refresh after each change.
 function onRefresh() {
-  sendSchedule(true);
   if (!pluginAvailable()) {
     sendStatus({ state: ST_NEEDS_PLUGINS, text: TEXT_PLUGINS });
     return;
   }
-  sendStatus(storedStatus());
-  sendItems(false);
+  fetchData(function (result) {
+    if (!result.ok) {
+      sendStatus(errorToStatus(result));
+      return;
+    }
+    sendSchedule(true);
+    sendStatus(storedStatus());
+    sendItems(false);
+  });
 }
 
 Pebble.addEventListener('configmessage', function (e) {

@@ -26,11 +26,9 @@ function createWorld() {
     }
     static now() { return clock.now; }
   };
-  const local = new Map();
   const secure = new Map();
   const world = {
     clock,
-    local,
     secure,
     calls: [],
     secureReads: [],
@@ -240,7 +238,6 @@ function createWorld() {
     const { api, handlers } = Pebble();
     const context = {
       console: { log() {}, error() {} },
-      localStorage: { getItem: (k) => (local.has(k) ? local.get(k) : null), setItem: (k, v) => local.set(k, String(v)), removeItem: (k) => local.delete(k) },
       fetch,
       Pebble: api,
       Date: FakeDate,
@@ -249,6 +246,8 @@ function createWorld() {
     ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'navigator', 'window', 'self', 'document', 'location'].forEach((key) => {
       Object.defineProperty(context, key, { get() { throw new Error(key + ' is not available to plugins'); }, configurable: true });
     });
+    // The engine has localStorage, but on Android PKJS overwrites it with its own stale copy.
+    Object.defineProperty(context, 'localStorage', { get() { throw new Error('localStorage is shared with PKJS; keep plugin state in Pebble.secureStorage'); } });
     vm.createContext(context);
     vm.runInContext(SOURCE, context);
     return handlers;
@@ -272,10 +271,10 @@ function createWorld() {
   world.advance = (ms) => { clock.now += ms; };
   world.signIn = (extra = {}) => {
     secure.set('tokens', JSON.stringify(Object.assign({ access: 'at1', refresh: 'rt1', expiresAt: clock.now + 7 * DAY, scope: 'media:read media:write' }, extra)));
-    local.set('account', JSON.stringify({ name: 'syl' }));
+    secure.set('account', JSON.stringify({ name: 'syl' }));
   };
-  world.store = (key) => (local.has(key) ? JSON.parse(local.get(key)) : null);
-  world.setStore = (key, value) => local.set(key, JSON.stringify(value));
+  world.store = (key) => (secure.has(key) ? JSON.parse(secure.get(key)) : null);
+  world.setStore = (key, value) => secure.set(key, JSON.stringify(value));
   world.setSettings = (patch) => {
     const base = { types: { tv: true, anime: true, movies: true }, lists: { watching: true, plantowatch: true, hold: false }, movieRelease: 'cinema', country: '', movieTime: '09:00', daysAhead: 14, reminder: -1, syncTimes: [360, -1] };
     const merged = Object.assign({}, base, patch);

@@ -35,7 +35,8 @@ test('sign-in start shows the code and keeps the device code only in secure stor
 
   assert.deepStrictEqual(w.store('signin'), { userCode: 'ABCD-EFGH', uri: 'https://simkl.com/pin', uriComplete: 'https://simkl.com/pin?user_code=ABCD-EFGH', expiresAt: NOW + 900000, interval: 5 });
   assert.strictEqual(w.secure.get('device_code'), 'dev-secret-1');
-  for (const [key, value] of w.local) assert.ok(!value.includes('dev-secret-1'), key + ' holds the device code');
+  const shown = (await w.action('watch_data')).text;
+  assert.ok(!shown.includes('dev-secret-1'), 'PKJS sees the device code');
 });
 
 test('starting again while the code is live shows the same code without a new request', async () => {
@@ -249,7 +250,35 @@ test('state reports the account, settings, status, permissions and version', asy
   assert.strictEqual(s.signin, null);
   assert.strictEqual(s.settings.daysAhead, 14);
   assert.deepStrictEqual(s.permissions, { simkl: 'granted', cdn: 'prompt', timeline: 'granted' });
-  assert.strictEqual(s.version, '1.0.0');
+  assert.strictEqual(s.version, require('../package.json').version);
+});
+
+test('watch_data gives PKJS what the watch shows, and none of the secrets', async () => {
+  const w = signedIn();
+  w.setSettings({ syncTimes: [420, 1200] });
+  await w.syncAll('manual');
+  const data = JSON.parse((await w.action('watch_data')).text);
+  assert.deepStrictEqual(data.account, { name: 'syl' });
+  assert.strictEqual(data.signin, null);
+  assert.strictEqual(data.status.ok, true);
+  assert.strictEqual(data.status.lastOkAt, NOW);
+  assert.deepStrictEqual(data.syncTimes, [420, 1200]);
+  assert.deepStrictEqual(data.items.map((i) => i.pinId), ['tv-100-1-1']);
+  const text = JSON.stringify(data);
+  ['at1', 'rt1'].forEach((secret) => assert.ok(!text.includes('"' + secret + '"'), secret));
+
+  // A failed sync keeps the time of the last good one; signing out forgets it.
+  w.hook = () => new TypeError('fetch failed');
+  w.advance(2 * MIN);
+  await w.action('sync', { reason: 'manual' });
+  const failed = JSON.parse((await w.action('watch_data')).text).status;
+  assert.strictEqual(failed.state, 'offline');
+  assert.strictEqual(failed.lastOkAt, NOW);
+  w.hook = null;
+  await w.config({ type: 'signout' });
+  const out = JSON.parse((await w.action('watch_data')).text);
+  assert.strictEqual(out.account, null);
+  assert.strictEqual(out.status.lastOkAt, 0);
 });
 
 test('state drops a sign-in code that has expired', async () => {

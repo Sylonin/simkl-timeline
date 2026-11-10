@@ -1,7 +1,7 @@
 {
   "name": "simkl-timeline",
   "author": "Sylonin",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Puts upcoming episodes and movie releases from your Simkl lists on the Pebble timeline.",
   "keywords": [
     "pebble-app"
@@ -126,6 +126,15 @@
         {
           "name": "signin_poll",
           "description": "Check whether the user approved the sign-in code. Answers 'pending', 'approved' or 'expired'.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        },
+        {
+          "name": "watch_data",
+          "description": "Read what the Simkl Timeline watch app shows, as JSON: the signed-in account, a sign-in code in progress, the last sync status, the daily sync times and the upcoming list.",
           "parameters": {
             "type": "object",
             "properties": {},

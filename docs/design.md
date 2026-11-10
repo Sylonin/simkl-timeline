@@ -6,7 +6,7 @@ The Pebble app no longer syncs timeline pins from a server: the timeline web API
 
 The Simkl work lives in a plugin, in the same pbw as the watch app:
 
-- the Simkl sign-in is kept in `Pebble.secureStorage`, which only the plugin can read;
+- the plugin keeps all its data, the Simkl sign-in included, in `Pebble.secureStorage`, which only the plugin can read;
 - a pin's **Mark watched** button is a `pluginAction`, so it runs on the phone without opening the watch app;
 - the settings page talks to the plugin while it is open, which the sign-in needs.
 
@@ -21,7 +21,7 @@ flowchart LR
   P -- fetch --> C[data.simkl.in<br/>calendar files]
   P -- insertTimelinePin --> T[Timeline]
   T -- Mark watched --> P
-  P -. localStorage .-> J
+  P -. watch_data .-> J
 ```
 
 ## Parts
@@ -29,7 +29,7 @@ flowchart LR
 | Part | Job |
 | --- | --- |
 | Watch app (`src/c`) | The upcoming list, item details with Mark watched, the sign-in screen (code and QR code), the daily Wakeup sync and the app glance. It keeps the last list in persistent storage, so it opens instantly and works offline. |
-| PKJS (`src/pkjs`) | The bridge. It runs the plugin's `sync` action, sends the list to the watch one message at a time, and draws the sign-in QR code. |
+| PKJS (`src/pkjs`) | The bridge. It runs the plugin's `sync` action, asks its `watch_data` action for what the watch shows, sends the list to the watch one message at a time, and draws the sign-in QR code. |
 | Plugin (`src/plugin/index.js`) | The engine: Simkl sign-in, list sync, schedules, movie release dates, the timeline pins and Mark watched. |
 | Settings page (`src/config.html`) | Sign in and out, every setting, sync status and Sync now. |
 
@@ -58,7 +58,7 @@ The plugin follows Simkl's two-phase sync. It reads `/sync/activities` first and
 
 The Pebble app gives a plugin action 20 seconds. `sync` therefore saves its progress after each step, stops starting new steps after about 12 seconds and answers `more`; PKJS calls it again, up to 10 times. The settings page has 5 minutes per message and runs the whole sync in one go.
 
-The plugin engine has no timers: on Android, `setTimeout` and the other browser globals throw "not available to plugins", and on iOS they don't exist. So the plugin never waits. When it has to (Simkl answers 429 or 5xx, or another run holds the sync lock or is renewing the sign-in), it saves its place and answers `wait:<ms>` to PKJS, or `retryAfterMs` to the settings page. The caller waits that long and asks again. Simkl's `Retry-After` is used when it sends one, else 1, 2 and 4 seconds; after that the error is reported. A run lock in `localStorage` keeps two runs from interleaving.
+The plugin engine has no timers: on Android, `setTimeout` and the other browser globals throw "not available to plugins", and on iOS they don't exist. So the plugin never waits. When it has to (Simkl answers 429 or 5xx, or another run holds the sync lock or is renewing the sign-in), it saves its place and answers `wait:<ms>` to PKJS, or `retryAfterMs` to the settings page. The caller waits that long and asks again. Simkl's `Retry-After` is used when it sends one, else 1, 2 and 4 seconds; after that the error is reported. A run lock keeps two runs from interleaving.
 
 ## Pins
 
@@ -77,14 +77,16 @@ Pins cover two days back to the chosen number of days ahead. A pin is rewritten 
 
 ## Storage
 
+Everything the plugin keeps is in `Pebble.secureStorage`, private to the plugin. It doesn't use `localStorage`, although the Pebble app shares it with PKJS. On Android, PKJS works on a copy of `localStorage` taken when the watch app starts and writes the whole copy back when it stops. Opening the settings page starts the watch app, so a sign-in the plugin stored in `localStorage` was erased as soon as the watch app closed. PKJS also never saw the plugin's later writes.
+
 | Where | Key | Holds |
 | --- | --- | --- |
-| `Pebble.secureStorage` (plugin only) | `tokens`, `device_code` | The Simkl access and refresh tokens, and the device code while signing in |
-| `localStorage` (plugin and PKJS) | `settings`, `account`, `signin`, `sync_status`, `upcoming` | The settings, the Simkl username, the live sign-in code, the last sync's outcome, and the next 16 airings for the watch. Only the plugin writes them. |
-| `localStorage` (plugin) | `pins`, `plugin.*` | Pin record, cached lists, activities snapshot, calendar subsets, movie lookups, watched items, sync progress, locks |
-| `localStorage` (PKJS) | `pkjs.sentHash`, `pkjs.lastOk` | What was last sent to the watch, and when the last sync succeeded |
+| `Pebble.secureStorage` (plugin) | `tokens`, `device_code` | The Simkl access and refresh tokens, and the device code while signing in |
+| `Pebble.secureStorage` (plugin) | `settings`, `account`, `signin`, `sync_status`, `upcoming` | The settings, the Simkl username, the live sign-in code, the last sync's outcome (with the time of the last good one), and the next 16 airings for the watch |
+| `Pebble.secureStorage` (plugin) | `pins`, `plugin.*` | Pin record, cached lists, activities snapshot, calendar subsets, movie lookups, watched items, sync progress, locks |
+| `localStorage` (PKJS) | `pkjs.data`, `pkjs.sentHash` | The last `watch_data` answer, shown at once on the next launch, and what was last sent to the watch |
 
-`signin` never holds the device code, which is a credential. Tokens follow Simkl's one-owner rule: the plugin refreshes only within a day of expiry or after a `401`, and after a `401` it first re-reads the stored token in case another run refreshed it.
+`signin` never holds the device code, which is a credential, and `watch_data` returns neither. Tokens follow Simkl's one-owner rule: the plugin refreshes only within a day of expiry or after a `401`, and after a `401` it first re-reads the stored token in case another run refreshed it.
 
 ## Messages
 
@@ -105,6 +107,8 @@ The plugin spaces sign-in polls itself (Simkl's `interval`, plus 5 seconds after
 
 ### Watch and PKJS
 
+PKJS gets what the watch shows from the plugin's `watch_data` action: the account, a sign-in code in progress, the sync status, the daily sync times and the upcoming list, as JSON. It asks when the watch app starts, after each sync, after Mark watched and when the settings page asks for a refresh.
+
 Every message carries `Cmd`.
 
 | Cmd | Direction | Meaning |
@@ -113,7 +117,7 @@ Every message carries `Cmd`.
 | 2 SYNC | watch → phone | Sync now |
 | 3 SIGNIN_START, 4 SIGNIN_STOP | watch → phone | The sign-in screen opened or closed |
 | 5 MARK_WATCHED | watch → phone | Mark the item in `ItemFlags`, `ItemSimkl`, `ItemSeason`, `ItemEpisode` watched |
-| 10 STATUS | phone → watch | `State` (ready, syncing, signed out, needs plugins, permission, offline, error), `Text`, `LastSync` |
+| 10 STATUS | phone → watch | `State` (ready, syncing, signed out, check the Pebble app, permission, offline, error), `Text`, `LastSync` |
 | 11 ITEMS_BEGIN, 12 ITEM, 13 ITEMS_END | phone → watch | The upcoming list, one item per message |
 | 14 SIGNIN_CODE | phone → watch | The code, its expiry and the QR code as a bit matrix |
 | 15 SIGNIN_RESULT | phone → watch | Approved, expired or error |
@@ -141,7 +145,8 @@ The settings page can also reach PKJS (target `pkjs`) while the watch app is ope
 
 ## Testing
 
-- `npm test` runs the plugin tests (`node --test test/*.test.cjs`). They load `src/plugin/index.js` in a sandbox that, like the Pebble app's plugin engine, has no timers or browser globals, with a fake `Pebble`, `fetch` and storage. They cover the calendar join, anime numbering, cinema and digital release dates with the country fallback, pin ids, updates and deletions, reminders, the two-phase list sync, token refresh, the sign-in polling, the resumable sync, waiting out a busy Simkl, and the run lock.
+- `npm test` runs the plugin tests (`node --test test/*.test.cjs`). They load `src/plugin/index.js` in a sandbox that, like the Pebble app's plugin engine, has no timers or browser globals, with a fake `Pebble`, `fetch` and secure storage. The sandbox's `localStorage` throws, because the plugin must not use it. The tests cover the calendar join, anime numbering, cinema and digital release dates with the country fallback, pin ids, updates and deletions, reminders, the two-phase list sync, token refresh, the sign-in polling, the resumable sync, waiting out a busy Simkl, the run lock and `watch_data`.
+- The emulator's PKJS and plugin read and write one live `localStorage`, unlike Android's PKJS copy, so the emulator can't show a plugin's `localStorage` writes being lost.
 - The emulator's plugin host is not locked down like the Pebble app: it has `setTimeout`, so a plugin that needs a timer works there and fails on a phone. The test sandbox is the check for that.
 - `pebble build`, then `pebble install --emulator emery` (Pebble Time 2). The emulator (pebble-tool 5.1.2) runs the watch app, PKJS, the plugin and the settings page together. It doesn't give plugins `Pebble.insertTimelinePin` or run `pluginAction` buttons, so pins and their Mark watched button need the real Pebble app.
 - Like the original Pebble app, the emulator only sends the watch pins from yesterday to 3 days ahead, and the watch's timeline only shows that range. Pins further ahead are kept on the phone and reach the watch as their day comes closer; the app's own list shows the whole window.

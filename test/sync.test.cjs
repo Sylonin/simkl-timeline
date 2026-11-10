@@ -42,8 +42,8 @@ test('every Simkl request carries the client id, app name, app version and user 
   for (const c of w.calls) {
     assert.strictEqual(c.query.client_id, '0c2ba84016dd0ef96cb51b3dd5d77eaff1597be12102c28f089e08e3c846235e', c.path);
     assert.strictEqual(c.query['app-name'], 'simkl-timeline');
-    assert.strictEqual(c.query['app-version'], '1.0.0');
-    assert.strictEqual(c.headers['User-Agent'], 'simkl-timeline/1.0.0');
+    assert.strictEqual(c.query['app-version'], require('../package.json').version);
+    assert.strictEqual(c.headers['User-Agent'], 'simkl-timeline/' + require('../package.json').version);
   }
 });
 
