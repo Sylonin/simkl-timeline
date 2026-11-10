@@ -1,155 +1,110 @@
----
-alwaysApply: true
----
+# Simkl Timeline
 
-## Project Overview
+A Pebble watch app that puts upcoming episodes and movie releases from the user's Simkl lists on the Pebble timeline. `README.md` describes what users see. `docs/design.md` describes how the parts work together, the message protocol, storage and pin ids. When a change alters something `docs/design.md` describes, update it in the same commit.
 
-This is a Pebble smartwatch application written in C using the Pebble SDK.
+The app needs the Core Devices Pebble app 1.18 or later with plugins turned on. Rebble and older Pebble apps can't run it.
 
-## Supported Platforms
+## Layout
 
-The app targets multiple Pebble watch models:
-- aplite (Pebble classic)
-- basalt (Pebble Time)
-- chalk (Pebble Time Round)
-- diorite (Pebble 2)
-- emery (Pebble Time 2)
-- flint (Pebble 2 Duo)
-- gabbro (Pebble Round 2)
-
-Alloy (embedded JavaScript) projects run on emery and gabbro only.
+| Path | Runs in | Job |
+| --- | --- | --- |
+| `src/c/` | watch | List, detail and sign-in windows, the daily Wakeup sync, the app glance. `comm.c` handles AppMessage, `model.c` holds state and persistent storage, `ui.c` holds fonts and date formatting. |
+| `src/pkjs/index.js` | PebbleKit JS on the phone | Bridge between the watch (AppMessage) and the plugin (`Pebble.invokeAction`). Draws the sign-in QR code with `qrcode-generator`. |
+| `src/plugin/index.js` | plugin engine on the phone | All Simkl logic: sign-in, list sync, schedules, timeline pins, Mark watched. |
+| `src/config.html` | bundled settings page | One file with inline script. Talks to the plugin through `Pebble.sendMessage('plugin', …)`. |
+| `test/` | Node | Plugin tests. `world.cjs` is the fake phone and the fake Simkl. |
+| `package.json` | | Manifest: uuid, platforms, permissions, plugin actions, message keys, resources. |
+| `resources/images/`, `appstore/` | | Launcher icons and store icons (see Icons). |
 
 ## Commands
 
-```bash
-# Build the app for all platforms
-pebble build
+pebble-tool is installed with uv in `~/.local/bin`, with SDK 4.44. On this NixOS machine, run `pebble` and `npm` inside `nix shell nixpkgs#uv nixpkgs#nodejs -c …`.
 
-# Clean build artifacts
-pebble clean
-
-# Install the app on specific emulator
-pebble install --emulator basalt
-
-# Screenshot the running emulator
-pebble screenshot --scale 6 --no-open screenshot.png
+```sh
+pebble build                                  # all seven platforms; runs npm install first
+npm test                                      # plugin tests: node --test test/*.test.cjs
+pebble install --emulator emery               # Pebble Time 2
+pebble screenshot --emulator emery --no-open --scale 3 /tmp/shot.png
+pebble emu-button --emulator emery click select   # back, up, select, down; --duration, --repeat
+pebble emu-app-config --emulator emery --uuid 4b7b70e6-67aa-4071-a811-2c4f6cfa316f   # the bundled settings page
+pebble kill && pebble wipe                    # stop a stuck emulator and clear its storage
 ```
 
-If you need more information on the `pebble` command or a sub-command, append `--help`.
+Setup problems seen on this machine:
 
-## Verify your work
+- `gcc: error: unrecognized command-line option '-mthumb'`: `CC`, `AR` or `NIX_CFLAGS_COMPILE` from another dev shell replaced the SDK's ARM compiler. Unset them, then `pebble clean`.
+- The emulator (qemu-pebble) needs shared libraries through nix-ld:
+  ```sh
+  export NIX_LD_LIBRARY_PATH="$(nix build --no-link --print-out-paths nixpkgs#zlib nixpkgs#pixman nixpkgs#libpng nixpkgs#SDL2 nixpkgs#glib.out nixpkgs#alsa-lib nixpkgs#libpulseaudio | sed 's|$|/lib|' | tr '\n' ':')$NIX_LD_LIBRARY_PATH"
+  ```
+- Without a display, add `--vnc` to every command that takes `--emulator`.
+- The first install after the emulator starts often fails with `Connection refused`. Retry every 10 seconds until it prints `App install succeeded`.
+- `pebble logs --emulator emery` prints nothing through a pipe. Run it under a pty: `script -q -f -c "pebble logs --emulator emery" /tmp/logs.txt`.
+- After changing `messageKeys`, run `pebble clean` before building. waf doesn't regenerate `message_keys.auto.h`.
 
-After every change, build, install, look at the result and read the logs. Do not stop at a successful build.
+## Verifying a change
 
-```bash
-pebble build
-pebble install --emulator emery --logs   # streams APP_LOG output; Ctrl-C once the app is up
-pebble screenshot --scale 6 --no-open screenshot.png   # then view screenshot.png
-pebble emu-button click select                          # drive the app
-pebble screenshot --scale 6 --no-open screenshot.png   # check the new state
-```
+- Plugin: run `npm test`, and add or change a test in `test/` for new behaviour. The emulator doesn't enforce the plugin engine's limits, so the tests are the only check of them.
+- Watch app: build, install, take a screenshot and press through the changed screens. Check emery first, then one platform from each display group: basalt (colour), chalk or gabbro (round), diorite (black and white). Check aplite when memory use changes. The build prints each platform's free heap; aplite has about 6.8 KB.
+- PKJS and settings page: install on the emulator and open the page with `pebble emu-app-config`. The browser ignores `pebblejs://close#`, so the page stays open after Save.
+- The emulator can't show pins inserted by the plugin, a pin's Mark watched button (`pluginAction`), or Android's `localStorage` behaviour. Those need the real Pebble app. Report them as unverified.
 
-`pebble logs --emulator emery` streams until Ctrl-C, so run it in a second terminal or in the background while you interact with the app, and stop it before moving on.
+## Rules that are easy to break
 
-Repeat with `--emulator <platform>` for each platform in `targetPlatforms` in package.json. Round displays (chalk, gabbro) and the smaller aplite/diorite screens need their own check.
+### Plugin engine
 
-### Headless Environments
+- No timers and no browser globals. On Android, `setTimeout`, `setInterval`, `navigator`, `window`, `document` and similar throw "not available to plugins". iOS doesn't have them. When the plugin has to wait, it saves its progress and answers `wait:<ms>` (actions) or `retryAfterMs` (settings page), and the caller waits.
+- No `localStorage`. PKJS shares it, and on Android PKJS writes its own stale copy back when it stops. Plugin state lives in `Pebble.secureStorage`. PKJS gets what the watch shows from the `watch_data` action.
+- No state in variables between requests. The Pebble app starts the script fresh for every request.
+- An action gets 20 seconds. `sync` stops starting new steps after `STEP_BUDGET_MS` (12 s) and answers `more`, and PKJS calls it again.
+- Treat only a `TypeError` from `fetch` as "offline".
+- `insertTimelinePin`, `deleteTimelinePin` and `pluginAction` need Pebble app 1.18. On 1.17 the plugin runs without them, so tell the user to update the Pebble app, not to turn plugins on.
+- `test/world.cjs` reproduces these limits: getters that throw for timers, browser globals and `localStorage`, and a fresh vm context for every call. Keep it in step with the real engine.
 
-If you're running in an environment without a window server (e.g., headless Linux, Docker, CI), you must add `--vnc` to **all commands that interact with the emulator**. This includes app installs, screenshots, button presses, and any `emu-*` commands:
+### Simkl API terms
 
-```bash
-pebble install --emulator basalt --vnc
-pebble screenshot --vnc --scale 6 --no-open screenshot.png
-pebble emu-button --emulator basalt --vnc click select
-```
+- Don't call the watchlist endpoints (`/sync/*`) without a user action. The scheduled Wakeup sync only reads the public calendar files on `data.simkl.in`.
+- Pull lists one request at a time. Movie lookups may run 3 at once.
+- Every request carries `app-name` and `app-version`. Every pin links to the item's Simkl page, as Simkl's attribution rule requires.
+- Refresh the token only within a day of expiry or after a `401`, and re-read the stored token first.
+- A new host needs its own `Internet` entry in `usesPermissions`. The Pebble app blocks undeclared domains.
 
-The `--vnc` flag enables a VNC-based display backend that doesn't require X11.
+### Watch and phone contract
 
-## Project Structure
+- `Cmd` numbers, `State` values and `ItemFlags` bits are defined in three places: `src/c/comm.h` and `src/c/model.h`, `src/pkjs/index.js`, and the Messages table in `docs/design.md`. Change all three together.
+- Watch strings have fixed buffers (`TITLE_LEN` and the others in `model.h`). PKJS cuts every string with `truncateUtf8`, on a UTF-8 character boundary. Use it for any new text field.
+- The watch holds its messages until PKJS sends `READY`, or for 6 seconds. PKJS sends one AppMessage at a time, because a second one in flight is rejected.
+- The app glance template string can't exceed 150 bytes, and app glances don't exist on aplite.
 
-```
-src/c/           - C source files for the watchapp
-src/pkjs/        - PebbleKitJS files (currently empty)
-worker_src/c/    - Worker source files (optional, not present)
-resources/       - Images, fonts, and other resources (not present)
-```
-## Configuration
+### Watch storage
 
-By default, this project is initialized as a watchface. To make it an app, replace "watchface": true with "watchface": false in package.json.
+- Key 1 holds `Meta`. Keys 16 to 31 hold one `Item` each. A persist key holds at most 256 bytes, and `_Static_assert`s in `model.c` check both structs.
+- Bump `META_VERSION` in `model.c` when the layout of `Meta` or `Item` changes. Older data is then dropped instead of misread.
+- Aplite has about 7 KB of heap. A full list needs about 4.5 KB while it arrives.
 
-## Architecture
+### Releases
 
-The application follows the standard Pebble app architecture:
+- `version` in `package.json` and `APP_VERSION` in `src/plugin/index.js` must match. `pebble build` rewrites the version in `package-lock.json`; commit that file too.
+- The Pebble app ignores an insert under a pin id that was deleted, so an item that returns gets `-2`, `-3` and so on appended (`pinIdFor`).
 
-1. **Main Entry Point**: `src/c` - The `main()` function initializes the app and starts the event loop
-2. **Window Management**: Single window app with text layer for displaying button press feedback
-3. **Event Handling**: Button click handlers registered via `prv_click_config_provider` for UP, DOWN, and SELECT buttons
+## Icons
 
-## SDK Documentation
+- Launcher icons are 25×25 PNGs in `resources/images/`. The `~color` and `~bw` suffixes select a file per platform.
+  - `menu_icon~color.png`: greyscale with transparency, for basalt, chalk, emery and gabbro. Colour launchers show apps in greyscale anyway.
+  - `menu_icon~bw.png`: pure black and white, no transparency, for aplite, diorite and flint. These launchers invert it on the highlighted row.
+- `package.json` lists the icon twice, split by `targetPlatforms`, because only the black-and-white entry has `memoryFormat: 1Bit`. Only one entry may set `menuIcon: true`: the SDK rejects a second one even when the platform lists don't overlap, although the SDK guide's example sets it twice. Both entries are named `IMAGE_MENU_ICON`, so every platform gets the icon.
+- Store icons: `appstore/icon.svg` is the source. Render `icon-small.png` (80×80) and `icon-large.png` (144×144) from it with `rsvg-convert -w 80 -h 80 appstore/icon.svg -o appstore/icon-small.png`, and pass them to `pebble publish --icon-small … --icon-large …`.
+- The aplite emulator has no launcher, so the aplite icon can only be checked on a watch.
 
-The full Pebble SDK documentation is available at https://developer.repebble.com.
+## Conventions
 
-An index of every page is at https://developer.repebble.com/llms.txt. Use it to discover what's available. Every page also has a Markdown version: append `.md` to any documentation URL to fetch plain Markdown instead of HTML (e.g. `https://developer.repebble.com/guides/events-and-services/buttons.md`). Prefer the `.md` form when reading docs.
+- C: `#pragma once`; static functions start with `prv_`; public functions start with their module name (`model_`, `comm_`, `ui_`). Handle platform differences with `PBL_IF_ROUND_ELSE`, `PBL_IF_COLOR_ELSE` and `PBL_PLATFORM_*`.
+- PKJS and plugin: `var` and function declarations, no arrow functions. Match the existing style.
+- Tests: CommonJS `*.test.cjs` files using `node:test`.
+- Commits: Conventional Commits, with a scope where one fits (`fix(plugin): …`).
 
-Main Categories:
-- Tutorials - Step-by-step learning (C watchface tutorial in 5 parts, advanced topics)
-- Developer Guides - Comprehensive reference organized by topic
+## Documentation
 
-Key Sections:
-- App Resources - Images, fonts, vector graphics, 256 resource limit
-- User Interfaces - Layer hierarchy, TextLayer, MenuLayer, round vs rectangular displays
-- Events & Services - Buttons, accelerometer, compass, health data, background workers
-- Communication - Bluetooth AppMessage, PebbleKit JS/Android/iOS integration
-- Graphics & Animations - Drawing APIs, property animations, vector graphics
-- Debugging - App logs, GDB, common errors and solutions
-- Best Practices - Multi-platform support, battery conservation, modular architecture
-- Design & Interaction - Glance-first design, one-click actions, platform guidelines
-- App Store Publishing - Submission requirements, assets, analytics
-
-Key Entry Points:
-- https://developer.repebble.com/tutorials/watchface-tutorial/part1 - C development start
-- https://developer.repebble.com/guides/events-and-services/buttons - Button handling
-- https://developer.repebble.com/guides/user-interfaces/layers - UI foundations
-
-## Development Best Practices
-
-- Whenever making changes, run `pebble screenshot --scale 6 --no-open screenshot.png` and view the screenshot to make sure it's what the user requested. If not, make more changes until it does what it's supposed to.
-
-## Emulator Button Control
-
-Control emulator buttons programmatically with `pebble emu-button`:
-
-```bash
-# Click a button (press and release)
-pebble emu-button click select
-
-# Long press (e.g., 2 seconds to exit app)
-pebble emu-button click back --duration 2000
-
-# Repeat clicks (e.g., scroll down 5 times)
-pebble emu-button click down --repeat 5
-
-# Faster repeat interval
-pebble emu-button click up --repeat 3 --interval 100
-```
-
-**Actions:**
-- `click` - Press then release (use `--duration` for long press)
-- `push` - Hold button down (use `release` to let go)
-- `release` - Release all buttons
-
-**Buttons:** `back`, `up`, `select`, `down`
-
-**Best Practices:**
-- Use `click` for normal navigation and selection
-- Use `click --duration 2000` for long press (e.g., back button to exit)
-- Use `--repeat` to scroll through menus instead of multiple commands
-- After making UI changes, take a screenshot to verify the result
-
-## AI Interaction Guidelines
-
-- When given an image of a watchface to replicate, describe the target watchface in precise detail. Note every visual element present, as well as size, alignment, font weight, spacing, and location.
-
-## AI Code Review Guidelines
-
-- Once you think you've fulfilled the user's request, ask yourself if you see any issues with the current screenshot, and if there are any differences between the screenshot and the reference image or the user's description. If so, fix them.
+- Pebble SDK: https://developer.repebble.com/llms.txt indexes every page. Add `.md` to a page URL to get Markdown.
+- Plugins: https://developer.repebble.com/guides/plugins/preview.md. Local pins: https://developer.repebble.com/guides/pebble-timeline/timeline-local-pins.md.
+- For plugin engine behaviour the docs don't cover, read the Pebble app source: github.com/coredevices/mobileapp, `libpebble3/src/{commonMain,androidMain}/kotlin/io/rebble/libpebblecommon/{js,plugin}/`.
