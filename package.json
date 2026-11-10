@@ -174,7 +174,24 @@
           "type": "bitmap",
           "name": "IMAGE_MENU_ICON",
           "file": "images/menu_icon.png",
-          "menuIcon": true
+          "memoryFormat": "1Bit",
+          "menuIcon": true,
+          "targetPlatforms": [
+            "aplite",
+            "diorite",
+            "flint"
+          ]
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_MENU_ICON",
+          "file": "images/menu_icon.png",
+          "targetPlatforms": [
+            "basalt",
+            "chalk",
+            "emery",
+            "gabbro"
+          ]
         }
       ]
     }
