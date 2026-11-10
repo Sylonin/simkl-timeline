@@ -382,8 +382,35 @@
 
   // Plugin link
 
+  var RETRY_BUDGET_MS = 45000;
+
+  function delay(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  // The plugin can't wait (its engine has no timers), so it answers retryAfterMs and the page waits.
+  // An error with retryAfterMs did nothing, so the same message goes again. Without an error, a
+  // sync is part-way through, and syncNow with resume carries it on.
   function send(message) {
-    return Promise.resolve(Pebble.sendMessage('plugin', message));
+    var waited = 0;
+    var resume = { type: 'syncNow', resume: true, reason: message.type === 'saveSettings' ? 'settings' : 'manual' };
+    function attempt(msg) {
+      return Promise.resolve(Pebble.sendMessage('plugin', msg));
+    }
+    function follow(reply) {
+      var ms = reply && reply.retryAfterMs;
+      if (!ms || waited + ms > RETRY_BUDGET_MS) return reply;
+      waited += ms;
+      return delay(ms).then(function () {
+        if (reply.error) return attempt(message).then(follow);
+        return attempt(resume).then(function (later) {
+          var merged = Object.assign({}, reply, { status: later.status, retryAfterMs: later.retryAfterMs });
+          if (message.type === 'syncNow') merged.ok = later.ok;
+          return follow(merged);
+        });
+      });
+    }
+    return attempt(message).then(follow);
   }
 
   function errorText(err) {

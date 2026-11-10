@@ -56,8 +56,9 @@ test('the calendar files and movie lookups go out without the user\'s token; the
   }
 });
 
+// A dropped connection, not a 5xx: a 5xx is a busy Simkl, which the caller waits out.
 function failFirstAnimePull(w) {
-  w.hook = (call) => (call.path === '/sync/all-items/anime/watching' ? w.response(500, { error: 'boom' }) : undefined);
+  w.hook = (call) => (call.path === '/sync/all-items/anime/watching' ? new TypeError('Network request failed') : undefined);
 }
 
 test('a pull that fails saves no snapshot; the retry carries on with the snapshot read before the first pull', async () => {
@@ -67,7 +68,7 @@ test('a pull that fails saves no snapshot; the retry carries on with the snapsho
   assert.strictEqual(failed.error.code, 'UNKNOWN');
   assert.strictEqual(w.store('plugin.snapshot'), null);
   assert.strictEqual(w.store('sync_status').ok, false);
-  assert.strictEqual(w.store('sync_status').state, 'error');
+  assert.strictEqual(w.store('sync_status').state, 'offline');
   const firstRead = w.store('plugin.sync').lists.A.all;
 
   w.hook = null;
@@ -247,12 +248,13 @@ test('a calendar file nobody needs is not downloaded', async () => {
   assert.deepStrictEqual(w.paths('data.simkl.in'), ['GET /calendar/v2/tv.json']);
 });
 
-test('when the calendar cannot be fetched the cached schedule stays on the timeline and the error is reported', async () => {
+test('when the calendar stays unreachable the cached schedule stays on the timeline and the error is reported', async () => {
   const w = ready();
   await w.syncAll('manual');
   w.hook = (call) => (call.host === 'data.simkl.in' ? w.response(503, {}) : undefined);
   w.advance(4 * HOUR);
-  const r = await w.action('sync', { reason: 'scheduled' });
+  const r = await w.syncAll('scheduled');
+  assert.deepStrictEqual(w.waits, [1000, 2000, 4000], 'three waits, then the run carries on without it');
   assert.strictEqual(r.error.code, 'UNKNOWN');
   assert.match(r.error.message, /having problems/);
   assert.deepStrictEqual(w.pinIds(), ['an-200-7', 'mv-300-cinema', 'tv-100-1-1']);
@@ -312,29 +314,57 @@ test('a scheduled call in the middle of a manual run does not continue it into t
 
 // ---------------------------------------------------------------- failures
 
-test('rate limit answers are retried after a pause, and the pause counts against the time budget', async () => {
+test('a busy Simkl makes the caller wait and ask again, with Retry-After when it gives one', async () => {
   const w = ready();
   let limited = 1;
   w.hook = (call) => (call.path === '/sync/activities' && limited-- > 0 ? w.response(429, { error: 'rate_limit', code: 429 }) : undefined);
+  const first = await w.action('sync', { reason: 'manual' });
+  assert.deepStrictEqual(first, { ok: true, text: 'wait:1000' });
+  assert.strictEqual(w.store('sync_status'), null, 'a wait is not a failure');
+  w.advance(1000);
   assert.strictEqual((await w.syncAll('manual')).text, 'done');
-  assert.deepStrictEqual(w.sleeps, [1000]);
+  assert.strictEqual(w.paths('api.simkl.com').filter((p) => p === 'GET /sync/activities').length, 2);
 
-  const slow = ready();
-  slow.latency = 9000;
-  slow.hook = (call) => (call.path === '/sync/activities' ? slow.response(503, {}) : undefined);
-  const r = await slow.action('sync', { reason: 'manual' });
-  assert.strictEqual(r.error.code, 'UNKNOWN');
-  assert.strictEqual(slow.calls.filter((c) => c.path === '/sync/activities').length, 2, 'the second retry would run past the 17 second budget');
+  const told = ready();
+  let busy = 1;
+  told.hook = (call) => (call.path === '/sync/activities' && busy-- > 0 ? told.response(503, {}, { 'retry-after': '7' }) : undefined);
+  assert.strictEqual((await told.syncAll('manual')).text, 'done');
+  assert.deepStrictEqual(told.waits, [7000]);
 });
 
-test('a daily quota 429 is not retried', async () => {
+test('a Simkl that stays busy is reported after three waits, and the run keeps its place', async () => {
+  const w = ready();
+  w.hook = (call) => (call.path === '/sync/activities' ? w.response(503, {}) : undefined);
+  const r = await w.syncAll('manual');
+  assert.deepStrictEqual(w.waits, [1000, 2000, 4000]);
+  assert.strictEqual(r.error.code, 'UNKNOWN');
+  assert.match(r.error.message, /having problems/);
+  assert.strictEqual(w.paths('api.simkl.com').filter((p) => p === 'GET /sync/activities').length, 4);
+  assert.strictEqual(w.store('plugin.snapshot'), null);
+
+  w.hook = null;
+  w.resetCalls();
+  assert.strictEqual((await w.syncAll('manual')).text, 'done');
+  assert.deepStrictEqual(w.waits, [], 'the count starts again');
+});
+
+test('a daily quota 429 is reported at once, without waiting', async () => {
   const w = ready();
   w.hook = (call) => (call.path === '/sync/activities' ? w.response(429, { error: 'user_limit_exceeded', code: 429 }, { 'retry-after': '40000' }) : undefined);
-  const r = await w.action('sync', { reason: 'manual' });
+  const r = await w.syncAll('manual');
   assert.strictEqual(r.error.code, 'UNKNOWN');
   assert.match(r.error.message, /daily limit/);
   assert.strictEqual(w.calls.length, 1);
-  assert.deepStrictEqual(w.sleeps, []);
+  assert.deepStrictEqual(w.waits, []);
+});
+
+test('a request that fails in the engine for another reason keeps its own message', async () => {
+  const w = ready();
+  w.hook = () => new RangeError('Invalid header value');
+  const r = await w.action('sync', { reason: 'manual' });
+  assert.strictEqual(r.error.code, 'UNKNOWN');
+  assert.doesNotMatch(r.error.message, /Can't reach/);
+  assert.match(r.error.message, /Invalid header value/);
 });
 
 test('being offline is reported as offline, naming the host', async () => {
@@ -405,11 +435,11 @@ test('an unknown sync reason is rejected', async () => {
 
 const lockOf = (w, until, owner = 'someone-else') => w.setStore('plugin.syncLock', { owner, until });
 
-test('a sync that starts while another holds the lock answers more and does nothing', async () => {
+test('a sync that starts while another holds the lock asks to be called again and does nothing', async () => {
   const w = ready();
   lockOf(w, w.clock.now + 20000);
   const r = await w.action('sync', { reason: 'manual' });
-  assert.deepStrictEqual(r, { ok: true, text: 'more' });
+  assert.deepStrictEqual(r, { ok: true, text: 'wait:1000' });
   assert.strictEqual(w.calls.length, 0);
   assert.deepStrictEqual(w.phone.ops, []);
   assert.strictEqual(w.store('plugin.sync'), null);
@@ -434,21 +464,34 @@ test('a run renews its lock as it goes, so a slow one is not taken over', async 
   assert.strictEqual(w.store('plugin.syncLock'), null, 'released when the invocation answers more');
 });
 
-test('the config page waits for a running sync, then runs its own', async () => {
+test('the config page is told to wait while a sync runs, then runs its own', async () => {
   const w = ready();
   lockOf(w, w.clock.now + 5000);
-  const r = await w.config({ type: 'syncNow' });
+  let r = await w.config({ type: 'syncNow' });
+  assert.strictEqual(r.retryAfterMs, 1000);
+  assert.strictEqual(w.calls.length, 0);
+  let rounds = 0;
+  while (r.retryAfterMs && rounds < 10) {
+    rounds++;
+    w.advance(r.retryAfterMs);
+    r = await w.config({ type: 'syncNow', resume: true });
+  }
   assert.strictEqual(r.ok, true);
-  assert.ok(w.sleeps.every((ms) => ms === 500));
-  assert.ok(w.sleeps.length >= 9);
+  assert.ok(rounds >= 5, 'rounds ' + rounds);
   assert.deepStrictEqual(w.pinIds(), ['an-200-7', 'mv-300-cinema', 'tv-100-1-1']);
 });
 
-test('the config page gives up with a clear message when the lock never frees', async () => {
+test('sign-out during a sync is refused with a wait, and nothing is cleared', async () => {
   const w = ready();
+  await w.syncAll('manual');
   lockOf(w, w.clock.now + 10 * 60 * 1000);
+  w.resetCalls();
   const r = await w.config({ type: 'signout' });
-  assert.match(r.error, /Another sync is still running/);
+  assert.match(r.error, /sync is running/);
+  assert.strictEqual(r.retryAfterMs, 1000);
+  assert.strictEqual(w.calls.length, 0);
+  assert.ok(w.secure.has('tokens'));
+  assert.strictEqual(w.pinIds().length, 3);
 });
 
 test('a pin deleted by mark_watched while a sync is inserting stays deleted, so its id is not reused', async () => {

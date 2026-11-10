@@ -395,8 +395,12 @@ function runSync(reason) {
         finish(errorToStatus(result));
         return;
       }
-      if (result.text === 'more' && calls < MAX_SYNC_CALLS && Date.now() - started < MAX_SYNC_MS) {
-        step();
+      // 'more': call again now. 'wait:<ms>': the plugin can't wait itself (no timers there), so we do.
+      var wait = /^wait:(\d+)$/.exec(result.text || '');
+      var delay = wait ? Number(wait[1]) : 0;
+      if ((result.text === 'more' || wait) && calls < MAX_SYNC_CALLS && Date.now() + delay - started < MAX_SYNC_MS) {
+        if (wait) setTimeout(step, delay);
+        else step();
         return;
       }
       var stored = storedStatus();

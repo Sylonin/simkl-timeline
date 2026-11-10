@@ -34,7 +34,7 @@ function createWorld() {
     secure,
     calls: [],
     secureReads: [],
-    sleeps: [],
+    waits: [], // the waits the plugin asked its caller for, in ms
     latency: 0, // ms each request takes
     permissions: {},
     pinApi: true,
@@ -43,7 +43,7 @@ function createWorld() {
     phone: { pins: new Map(), deleted: new Set(), ops: [] },
     hook: null, // async (call) => response | Error | undefined, to break things on purpose
     onInsert: null, // async (pin) => void, runs while the phone takes an insert: a second invocation can act meanwhile
-    onSleep: null, // (ms) => void, runs while the plugin waits: what another invocation does meanwhile
+    onWait: null, // (ms) => void, runs while the caller waits: what another invocation does meanwhile
   };
 
   // ---------------------------------------------------------------- Simkl
@@ -244,15 +244,11 @@ function createWorld() {
       fetch,
       Pebble: api,
       Date: FakeDate,
-      // A sleep moves the clock. Timers of 10 s and more are request timeouts, which these fakes never need.
-      setTimeout: (fn, ms) => {
-        if (ms >= 10000) return 0;
-        world.sleeps.push(ms);
-        Promise.resolve().then(() => { clock.now += ms; if (world.onSleep) world.onSleep(ms); fn(); });
-        return 0;
-      },
-      clearTimeout() {},
     };
+    // The Pebble app's plugin engine has no timers and no browser globals; it throws like this.
+    ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'navigator', 'window', 'self', 'document', 'location'].forEach((key) => {
+      Object.defineProperty(context, key, { get() { throw new Error(key + ' is not available to plugins'); }, configurable: true });
+    });
     vm.createContext(context);
     vm.runInContext(SOURCE, context);
     return handlers;
@@ -287,13 +283,23 @@ function createWorld() {
   };
   world.callsTo = (host) => world.calls.filter((c) => c.host === host);
   world.paths = (host) => world.callsTo(host).map((c) => c.method + ' ' + c.path);
-  world.resetCalls = () => { world.calls.length = 0; world.phone.ops.length = 0; world.sleeps.length = 0; world.secureReads.length = 0; };
-  // Runs sync calls until the plugin says done, like PKJS does.
+  world.resetCalls = () => { world.calls.length = 0; world.phone.ops.length = 0; world.waits.length = 0; world.secureReads.length = 0; };
+  // Runs sync calls until the plugin says done, like PKJS does: again at once on 'more', and
+  // after the wait on 'wait:<ms>'.
   world.syncAll = async (reason) => {
     for (let i = 0; i < 20; i++) {
       const r = await world.action('sync', { reason });
       if (r.error) return r;
       if (r.text === 'done') return r;
+      const wait = /^wait:(\d+)$/.exec(r.text);
+      if (wait) {
+        const ms = Number(wait[1]);
+        world.waits.push(ms);
+        clock.now += ms;
+        if (world.onWait) world.onWait(ms);
+      } else if (r.text !== 'more') {
+        throw new Error('unexpected sync answer ' + r.text);
+      }
     }
     throw new Error('sync never finished');
   };

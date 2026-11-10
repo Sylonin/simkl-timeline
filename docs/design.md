@@ -54,9 +54,11 @@ The plugin follows Simkl's two-phase sync. It reads `/sync/activities` first and
 - Movies: `/movies/{id}` for each Plan to Watch movie from last year or later, or with no year. Its `release_dates` list has dates per country and type: types 2 and 3 are cinema releases (wide preferred), type 4 is digital. When your country has no date of the chosen type, the US date is used and the pin says so. Lookups are cached for a day when a release is still ahead, and for a week otherwise. Up to 3 run at once, which Simkl allows for this cached endpoint.
 - Anime films: the anime calendar gives a day in Japan, which is used as the release day.
 
-### Time limit
+### Time limits and waiting
 
-The Pebble app gives a plugin action 20 seconds. `sync` therefore saves its progress after each step, stops starting new steps after about 12 seconds and answers `more`; PKJS calls it again, up to 10 times. A run lock in `localStorage` keeps two runs from interleaving. The settings page has 5 minutes per message and runs the whole sync in one go.
+The Pebble app gives a plugin action 20 seconds. `sync` therefore saves its progress after each step, stops starting new steps after about 12 seconds and answers `more`; PKJS calls it again, up to 10 times. The settings page has 5 minutes per message and runs the whole sync in one go.
+
+The plugin engine has no timers: on Android, `setTimeout` and the other browser globals throw "not available to plugins", and on iOS they don't exist. So the plugin never waits. When it has to (Simkl answers 429 or 5xx, or another run holds the sync lock or is renewing the sign-in), it saves its place and answers `wait:<ms>` to PKJS, or `retryAfterMs` to the settings page. The caller waits that long and asks again. Simkl's `Retry-After` is used when it sends one, else 1, 2 and 4 seconds; after that the error is reported. A run lock in `localStorage` keeps two runs from interleaving.
 
 ## Pins
 
@@ -139,6 +141,7 @@ The settings page can also reach PKJS (target `pkjs`) while the watch app is ope
 
 ## Testing
 
-- `npm test` runs the plugin tests (`node --test test/*.test.cjs`). They load `src/plugin/index.js` in a sandbox with a fake `Pebble`, `fetch` and storage, and cover the calendar join, anime numbering, cinema and digital release dates with the country fallback, pin ids, updates and deletions, reminders, the two-phase list sync, token refresh, the sign-in polling, the resumable sync and the run lock.
+- `npm test` runs the plugin tests (`node --test test/*.test.cjs`). They load `src/plugin/index.js` in a sandbox that, like the Pebble app's plugin engine, has no timers or browser globals, with a fake `Pebble`, `fetch` and storage. They cover the calendar join, anime numbering, cinema and digital release dates with the country fallback, pin ids, updates and deletions, reminders, the two-phase list sync, token refresh, the sign-in polling, the resumable sync, waiting out a busy Simkl, and the run lock.
+- The emulator's plugin host is not locked down like the Pebble app: it has `setTimeout`, so a plugin that needs a timer works there and fails on a phone. The test sandbox is the check for that.
 - `pebble build`, then `pebble install --emulator emery` (Pebble Time 2). The emulator (pebble-tool 5.1.2) runs the watch app, PKJS, the plugin and the settings page together. It doesn't give plugins `Pebble.insertTimelinePin` or run `pluginAction` buttons, so pins and their Mark watched button need the real Pebble app.
 - Like the original Pebble app, the emulator only sends the watch pins from yesterday to 3 days ahead, and the watch's timeline only shows that range. Pins further ahead are kept on the phone and reach the watch as their day comes closer; the app's own list shows the whole window.

@@ -196,15 +196,25 @@ test('on a 401 with an unchanged token, it is refreshed and the request retried'
   assert.deepStrictEqual(order.slice(0, 3), ['/sync/activities Bearer at1', '/oauth2/token ', '/sync/activities Bearer at2']);
 });
 
-test('while another invocation holds the refresh lock, this one waits for its token instead of refreshing', async () => {
+test('while another invocation refreshes an expired token, this one asks to be called again and then uses the new token', async () => {
+  const w = signedIn();
+  w.signIn({ expiresAt: NOW - 1000 });
+  w.setStore('plugin.refreshLock', NOW + 10000);
+  w.sim.validAccess = new Set(['at7']);
+  w.onWait = () => w.secure.set('tokens', JSON.stringify({ access: 'at7', refresh: 'rt1', expiresAt: w.clock.now + 7 * DAY, scope: 'media:read media:write' }));
+  assert.strictEqual((await w.syncAll('manual')).text, 'done');
+  assert.deepStrictEqual(w.waits, [1000]);
+  assert.strictEqual(tokenCalls(w).length, 0);
+  assert.ok(w.calls.filter((c) => c.path.startsWith('/sync/')).every((c) => c.headers.Authorization === 'Bearer at7'));
+});
+
+test('while another invocation refreshes, a token that still works is used without waiting', async () => {
   const w = signedIn();
   w.signIn({ expiresAt: NOW + HOUR });
   w.setStore('plugin.refreshLock', NOW + 10000);
-  w.sim.validAccess = new Set(['at7']);
-  w.onSleep = () => w.secure.set('tokens', JSON.stringify({ access: 'at7', refresh: 'rt1', expiresAt: w.clock.now + 7 * DAY, scope: 'media:read media:write' }));
   assert.strictEqual((await w.syncAll('manual')).text, 'done');
+  assert.deepStrictEqual(w.waits, []);
   assert.strictEqual(tokenCalls(w).length, 0);
-  assert.ok(w.calls.filter((c) => c.path.startsWith('/sync/')).every((c) => c.headers.Authorization === 'Bearer at7'));
 });
 
 test('when Simkl ends the grant, the user is signed out and told to sign in again', async () => {

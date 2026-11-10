@@ -4,6 +4,10 @@
 // everything that must survive is in localStorage (shared with PKJS) or Pebble.secureStorage
 // (tokens and the device code, private to this plugin).
 //
+// The plugin engine has no timers: the Android app blocks setTimeout and iOS has none. So the
+// plugin never waits. A sync answers 'wait:<ms>' and the config page gets retryAfterMs, and the
+// caller (PKJS or the page) waits before asking again.
+//
 // localStorage, shared with PKJS: settings, account, signin, sync_status, upcoming.
 // localStorage, private:
 //   pins              pin id -> { key, time (ms), hash, deleted? }
@@ -29,13 +33,10 @@ var CALENDAR_PATH = '/calendar/v2/';
 var MINUTE = 60 * 1000;
 var HOUR = 60 * MINUTE;
 var DAY = 24 * HOUR;
-var REQUEST_TIMEOUT_MS = 15000;
 var STEP_BUDGET_MS = 12000; // stop starting work after this; the host kills an action at 20 s
-var HARD_BUDGET_MS = 17000; // never sleep past this
 var FULL_STEP_BUDGET_MS = 270000; // config page messages get 5 minutes
-var FULL_HARD_BUDGET_MS = 290000;
 var LOCK_TTL_MS = 30000; // a killed run frees the lock this long after its last renewal
-var LOCK_POLL_MS = 500;
+var LOCK_RETRY_MS = 1000; // how long a caller waits before asking again while a lock is held
 var STALE_RUN_MS = 10 * MINUTE;
 var CALENDAR_MAX_AGE_MS = 3 * HOUR; // the CDN regenerates every 6 hours
 var PIN_KEEP_MS = 4 * DAY;
@@ -47,7 +48,7 @@ var MOVIE_FRESH_AHEAD_MS = DAY;
 var MOVIE_FRESH_MS = 7 * DAY;
 var MOVIE_PARALLEL = 3;
 var LISTS_RECHECK_MS = { open: 15 * MINUTE, manual: MINUTE, settings: MINUTE };
-var BACKOFF_MS = [1000, 2000, 4000];
+var BACKOFF_MS = [1000, 2000, 4000]; // waits before asking a busy Simkl again, when it gives no Retry-After
 
 var STATUS_KEYS = ['watching', 'plantowatch', 'hold'];
 var LIST_BUCKETS = ['watching', 'plantowatch', 'hold', 'completed', 'dropped', 'notinteresting'];
@@ -92,6 +93,28 @@ function asPluginError(e) {
   return isPluginError(e) ? e : new PluginError('UNKNOWN', 'Something went wrong: ' + (e && e.message ? e.message : String(e)) + '.');
 }
 
+// Simkl or another run is busy. Nothing failed for good: the caller asks again after
+// retryAfterMs (null: the next BACKOFF_MS step). `counts`: whether it uses up a backoff try.
+function busyError(message, retryAfterMs, counts) {
+  var e = new PluginError('UNKNOWN', message, 'busy');
+  e.retryAfterMs = retryAfterMs;
+  e.counts = counts;
+  return e;
+}
+
+function isBusy(e) {
+  return isPluginError(e) && e.state === 'busy';
+}
+
+function waitAnswer(ms) {
+  return 'wait:' + Math.round(ms);
+}
+
+function waitOf(answer) {
+  var m = /^wait:(\d+)$/.exec(answer || '');
+  return m ? Number(m[1]) : null;
+}
+
 // ---------------------------------------------------------------- storage
 
 function load(key, fallback) {
@@ -126,10 +149,6 @@ async function readTokens() {
 
 async function writeTokens(tokens) {
   await Pebble.secureStorage.setItem('tokens', JSON.stringify(tokens));
-}
-
-function sleep(ms) {
-  return new Promise(function (resolve) { setTimeout(resolve, ms); });
 }
 
 // ---------------------------------------------------------------- settings
@@ -289,22 +308,24 @@ function buildUrl(host, path, query) {
   return 'https://' + host + path + '?' + encodeQuery(q);
 }
 
-function withTimeout(promise) {
-  return new Promise(function (resolve, reject) {
-    var timer = setTimeout(function () {
-      var e = new Error('timed out');
-      e.name = 'TimeoutError';
-      reject(e);
-    }, REQUEST_TIMEOUT_MS);
-    promise.then(function (v) { clearTimeout(timer); resolve(v); }, function (e) { clearTimeout(timer); reject(e); });
-  });
-}
-
+// The host's fetch rejects with a TypeError when the network fails or times out. Anything else
+// is not a connection problem, so it keeps its own message.
 function transportError(e, host) {
   if (e && e.name === 'NotAllowedError') {
     return new PluginError('PERMISSION_DENIED', 'Simkl Timeline is not allowed to connect to ' + host + '. Turn on "Connect to ' + host + '" in the app\'s permissions in the Pebble app.');
   }
-  return new PluginError('UNKNOWN', 'Can\'t reach ' + host + '. Check the internet connection.', 'offline');
+  if (e && e.name === 'TypeError') {
+    if (/^fetch timeout/.test(e.message || '')) return new PluginError('UNKNOWN', host + ' took too long to answer. Try again.', 'offline');
+    return new PluginError('UNKNOWN', 'Can\'t reach ' + host + '. Check the internet connection.', 'offline');
+  }
+  return asPluginError(e);
+}
+
+// Retry-After in seconds, as a wait in ms between 1 s and 1 min; null without one.
+function retryAfterMs(r) {
+  var seconds = Number(header(r, 'retry-after'));
+  if (!(seconds > 0)) return null;
+  return Math.min(Math.max(seconds * 1000, 1000), MINUTE);
 }
 
 async function readResponse(res) {
@@ -341,7 +362,7 @@ function failure(r, host) {
   return new PluginError('UNKNOWN', 'Simkl answered HTTP ' + r.status + (id ? ' (' + id + ')' : '') + ' from ' + host + '.');
 }
 
-// One request with 429/5xx backoff that never sleeps past the invocation budget.
+// One request. A per-second 429 or a 5xx is a busy error for the caller to wait out.
 async function http(cx, o) {
   var url = buildUrl(o.host, o.path, o.query);
   var init = { method: o.method || 'GET', headers: { 'User-Agent': USER_AGENT } };
@@ -356,27 +377,20 @@ async function http(cx, o) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(o.json);
   }
-  for (var attempt = 0; ; attempt++) {
-    var r;
-    renewLock(cx);
-    try {
-      r = await readResponse(await withTimeout(Promise.resolve().then(function () { return fetch(url, init); })));
-    } catch (e) {
-      throw transportError(e, o.host);
-    }
-    if ((r.status === 429 || r.status >= 500) && attempt < BACKOFF_MS.length) {
-      // Only the per-second 429 clears quickly; the daily ones need hours.
-      if (r.status === 429 && !(r.json && r.json.error === 'rate_limit')) {
-        throw new PluginError('UNKNOWN', 'Simkl\'s daily limit for this account is used up. Try again later.');
-      }
-      var wait = BACKOFF_MS[attempt];
-      if (Date.now() + wait + 3000 < cx.hardEnd) {
-        await sleep(wait);
-        continue;
-      }
-    }
-    return r;
+  renewLock(cx);
+  var r;
+  try {
+    // No timeout of our own: the host times requests out, and the action itself at 20 s.
+    r = await readResponse(await fetch(url, init));
+  } catch (e) {
+    throw transportError(e, o.host);
   }
+  if (r.status === 429 && !(r.json && r.json.error === 'rate_limit')) {
+    // Only the per-second 429 clears quickly; the daily ones need hours.
+    throw new PluginError('UNKNOWN', 'Simkl\'s daily limit for this account is used up. Try again later.');
+  }
+  if (r.status === 429 || r.status >= 500) throw busyError(failure(r, o.host).message, retryAfterMs(r), true);
+  return r;
 }
 
 // An authorized call to api.simkl.com; one 401 recovery, never a refresh loop.
@@ -427,18 +441,14 @@ async function currentTokens(cx) {
   return tokens;
 }
 
-// One owner at a time: others wait for the lock and then use what the owner stored.
+// One owner at a time: while another invocation refreshes, this one asks again later for its token.
 async function refreshTokens(cx, staleAccess) {
-  var waited = 0;
-  while (load('plugin.refreshLock', 0) > Date.now() && waited < 10000) {
-    await sleep(500);
-    waited += 500;
-    var other = await readTokens();
-    if (other && other.access !== staleAccess) return other;
-  }
   var before = await readTokens();
   if (!before) throw new PluginError('AUTH_REQUIRED', 'Sign in to Simkl to see upcoming episodes.');
   if (before.access !== staleAccess) return before;
+  if (load('plugin.refreshLock', 0) > Date.now()) {
+    throw busyError('Simkl Timeline is renewing its Simkl sign-in. Try again in a moment.', LOCK_RETRY_MS, false);
+  }
   save('plugin.refreshLock', Date.now() + 20000);
   try {
     var r = await http(cx, { host: API_HOST, path: '/oauth2/token', method: 'POST', form: { grant_type: 'refresh_token', refresh_token: before.refresh } });
@@ -568,6 +578,10 @@ async function pollSignin(cx) {
   var r;
   try {
     r = await http(cx, { host: API_HOST, path: '/oauth2/token', method: 'POST', form: { grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: deviceCode } });
+  } catch (e) {
+    // A busy Simkl is asked again at the next poll anyway.
+    if (isBusy(e)) return 'pending';
+    throw e;
   } finally {
     save('plugin.pollNext', Date.now() + signin.interval * 1000);
   }
@@ -844,9 +858,15 @@ async function fetchCalendar(cx, kind, ids) {
   });
 }
 
+// A busy error is worth waiting out while backoff tries are left; after that the step carries on.
+function waitable(e, prog) {
+  return isBusy(e) && (!e.counts || (prog.busy || 0) < BACKOFF_MS.length);
+}
+
 // A broken calendar fetch keeps the old copy in use; the run still reports it at the end.
 function defer(prog, e) {
-  if (!prog.deferred) prog.deferred = { code: e.code, message: e.message, state: e.state };
+  // A deferred error is reported once the run ends, so it is never one to wait out.
+  if (!prog.deferred) prog.deferred = { code: e.code, message: e.message, state: isBusy(e) ? undefined : e.state };
 }
 
 async function calendarStep(cx, prog, settings) {
@@ -865,7 +885,7 @@ async function calendarStep(cx, prog, settings) {
     try {
       await fetchCalendar(cx, kind, ids);
     } catch (e) {
-      if (isFatal(e)) throw e;
+      if (isFatal(e) || waitable(e, prog)) throw e;
       defer(prog, asPluginError(e));
     }
     prog.cal[kind] = true;
@@ -977,8 +997,8 @@ async function moviesStep(cx, prog, settings) {
         return;
       }
       var e = asPluginError(res.error);
-      if (isFatal(e)) stop = stop || e;
-      else if (e.state === 'offline') {
+      if (isFatal(e) || waitable(e, prog)) stop = stop || e;
+      else if (e.state === 'offline' || isBusy(e)) {
         defer(prog, e);
         todo.length = 0;
       } else {
@@ -1243,8 +1263,7 @@ function saveProgress(prog) {
 var STEPS = { lists: listsStep, calendar: calendarStep, movies: moviesStep, pins: pinsStep };
 
 function makeContext(full) {
-  var start = Date.now();
-  return { start: start, stepEnd: start + (full ? FULL_STEP_BUDGET_MS : STEP_BUDGET_MS), hardEnd: start + (full ? FULL_HARD_BUDGET_MS : HARD_BUDGET_MS), fresh: !!full, waitForLock: !!full, owner: null };
+  return { stepEnd: Date.now() + (full ? FULL_STEP_BUDGET_MS : STEP_BUDGET_MS), fresh: !!full, owner: null };
 }
 
 // One sync at a time: two runs would interleave read-modify-write of the pin records, and a lost
@@ -1265,20 +1284,16 @@ function releaseLock(owner) {
   if (held && held.owner === owner) drop('plugin.syncLock');
 }
 
-// An action gives up at once (the caller asks again); the config page waits for its turn.
-async function acquireLock(cx, owner) {
-  while (!tryLock(owner)) {
-    if (!cx.waitForLock) return false;
-    if (Date.now() >= cx.hardEnd) throw new PluginError('UNKNOWN', 'Another sync is still running. Try again in a moment.');
-    await sleep(LOCK_POLL_MS);
-  }
+// Never waits for the lock: the caller asks again after LOCK_RETRY_MS.
+function acquireLock(cx, owner) {
+  if (!tryLock(owner)) return false;
   cx.owner = owner;
   return true;
 }
 
 async function withLock(cx, fn) {
   var owner = newOwner();
-  await acquireLock(cx, owner);
+  if (!acquireLock(cx, owner)) throw busyError('A sync is running. Try again in a moment.', LOCK_RETRY_MS, false);
   try {
     return await fn();
   } finally {
@@ -1295,10 +1310,11 @@ function statusFor(e) {
   return writeStatus(false, e.state, e.message);
 }
 
-// One invocation of the sync: 'done', or 'more' when work is left and the caller should call again.
+// One invocation of the sync: 'done'; 'more' when work is left and the caller should call again
+// at once; or 'wait:<ms>' when it should call again after that long.
 async function syncOnce(reason, cx) {
   var owner = newOwner();
-  if (!(await acquireLock(cx, owner))) return 'more';
+  if (!acquireLock(cx, owner)) return waitAnswer(LOCK_RETRY_MS);
   try {
     return await runSync(reason, cx);
   } finally {
@@ -1309,6 +1325,7 @@ async function syncOnce(reason, cx) {
 
 async function runSync(reason, cx) {
   var settings = getSettings();
+  var prog = null;
   try {
     requirePinApi();
     await requirePermissions(['simkl', 'cdn', 'timeline']);
@@ -1317,7 +1334,7 @@ async function runSync(reason, cx) {
       await clearCredentials();
       throw new PluginError('AUTH_REQUIRED', 'Sign in to Simkl to see upcoming episodes.');
     }
-    var prog = cx.fresh ? null : load('plugin.sync', null);
+    prog = cx.fresh ? null : load('plugin.sync', null);
     cx.fresh = false; // a full run starts over once, then continues its own progress
     var age = prog ? Date.now() - prog.startedAt : 0;
     if (!prog || prog.reason !== reason || age > STALE_RUN_MS || age < 0) {
@@ -1335,6 +1352,7 @@ async function runSync(reason, cx) {
       renewLock(cx);
       if ((await STEPS[prog.steps[prog.i]](cx, prog, settings)) === 'more') return 'more';
       prog.i++;
+      prog.busy = 0;
       saveProgress(prog);
     }
     drop('plugin.sync');
@@ -1345,21 +1363,38 @@ async function runSync(reason, cx) {
     return 'done';
   } catch (e) {
     var err = asPluginError(e);
+    if (isBusy(err) && prog) {
+      // Waiting keeps the progress and the last status; only a Simkl that stays busy is reported.
+      var tries = prog.busy || 0;
+      if (!err.counts || tries < BACKOFF_MS.length) {
+        if (err.counts) prog.busy = tries + 1;
+        saveProgress(prog);
+        return waitAnswer(err.retryAfterMs || BACKOFF_MS[tries]);
+      }
+      prog.busy = 0;
+      saveProgress(prog);
+      err = new PluginError('UNKNOWN', err.message);
+    }
     if (isFatal(err)) drop('plugin.sync');
     statusFor(err);
     throw err;
   }
 }
 
-// The config page runs everything in one go.
-async function syncFully(reason) {
+// The config page runs everything in one go. When the run has to wait, the answer carries
+// retryAfterMs and the page sends syncNow with resume after that long.
+async function syncFully(reason, resume) {
   var cx = makeContext(true);
+  if (resume) cx.fresh = false;
+  var answer = 'done';
   try {
-    while ((await syncOnce(reason, cx)) === 'more');
+    do {
+      answer = await syncOnce(reason, cx);
+    } while (answer === 'more');
   } catch (e) {
     // syncOnce stored the failure in sync_status.
   }
-  return load('sync_status', null);
+  return { status: load('sync_status', null), retryAfterMs: waitOf(answer) || undefined };
 }
 
 // ---------------------------------------------------------------- mark watched
@@ -1503,7 +1538,8 @@ Pebble.registerConfigHandler(async function (message, respond) {
           return;
         }
         save('settings', checked.value);
-        respond({ ok: true, status: await syncFully('settings') });
+        var saved = await syncFully('settings');
+        respond({ ok: true, status: saved.status, retryAfterMs: saved.retryAfterMs });
         return;
       }
       case 'signinStart':
@@ -1521,7 +1557,8 @@ Pebble.registerConfigHandler(async function (message, respond) {
           respond({ state: state });
           return;
         }
-        respond({ state: 'approved', account: load('account', null), status: await syncFully('manual') });
+        var first = await syncFully('manual');
+        respond({ state: 'approved', account: load('account', null), status: first.status, retryAfterMs: first.retryAfterMs });
         return;
       }
       case 'signout':
@@ -1529,14 +1566,18 @@ Pebble.registerConfigHandler(async function (message, respond) {
         respond(await withLock(cx, function () { return signOut(cx); }));
         return;
       case 'syncNow': {
-        var status = await syncFully('manual');
-        respond({ ok: !!(status && status.ok), status: status });
+        // resume carries on a run that had to wait, under the reason it started with.
+        var reason = message.reason === 'settings' ? 'settings' : 'manual';
+        var result = await syncFully(reason, !!message.resume);
+        respond({ ok: !!(result.status && result.status.ok), status: result.status, retryAfterMs: result.retryAfterMs });
         return;
       }
       default:
         respond({ error: 'unknown message type' });
     }
   } catch (e) {
-    respond({ error: asPluginError(e).message });
+    var err = asPluginError(e);
+    // A busy error did nothing, so the page sends the same message again after the wait.
+    respond({ error: err.message, retryAfterMs: isBusy(err) ? (err.retryAfterMs || BACKOFF_MS[0]) : undefined });
   }
 });
