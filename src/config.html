@@ -1,0 +1,853 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Simkl Timeline</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f1f1f5;
+    --card: #ffffff;
+    --text: #1b1b1f;
+    --muted: #686873;
+    --line: rgba(0, 0, 0, .1);
+    --field: #f1f1f5;
+    --accent: #d42a3c;
+    --accent-text: #ffffff;
+    --ok: #1b8a3b;
+    --warn: #a35f00;
+    --err: #c2271f;
+    --notice-bg: #fff1cf;
+    --notice-text: #5a3b00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f0f12;
+      --card: #1c1c21;
+      --text: #f2f2f5;
+      --muted: #9d9da8;
+      --line: rgba(255, 255, 255, .12);
+      --field: #2a2a31;
+      --accent: #ec4455;
+      --accent-text: #ffffff;
+      --ok: #4cc26a;
+      --warn: #f0b34a;
+      --err: #ff7b72;
+      --notice-bg: #3a2d10;
+      --notice-text: #f6dca3;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+    padding-bottom: calc(88px + env(safe-area-inset-bottom));
+  }
+  [hidden] { display: none !important; }
+
+  header {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: calc(12px + env(safe-area-inset-top)) 16px 12px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+  }
+  h1 { margin: 0; font-size: 20px; font-weight: 700; white-space: nowrap; }
+  #save { font-size: 14px; color: var(--muted); min-height: 20px; text-align: right; }
+  #save.saved { color: var(--ok); }
+  #save.error { color: var(--err); }
+  #save button { margin-left: 6px; }
+
+  main { max-width: 560px; margin: 0 auto; padding: 8px 16px 0; }
+  section { margin-top: 24px; }
+  h2 {
+    margin: 0 0 8px 4px; font-size: 13px; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .card { background: var(--card); border-radius: 14px; overflow: hidden; }
+  .row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    min-height: 52px; padding: 8px 16px;
+  }
+  .card > .row + .row, .card > .row + .block, .card > .block + .row, .card > .block + .block {
+    border-top: 1px solid var(--line);
+  }
+  .block { padding: 12px 16px; }
+  .label { flex: 1 1 auto; min-width: 0; }
+  .label small { display: block; color: var(--muted); font-size: 13px; }
+  .note { margin: 8px 4px 0; color: var(--muted); font-size: 13px; }
+  p { margin: 0; }
+
+  button, .button {
+    font: inherit; font-weight: 600; min-height: 48px; padding: 10px 18px; border: 0; border-radius: 12px;
+    background: var(--accent); color: var(--accent-text); cursor: pointer; text-decoration: none;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  button.secondary { background: var(--field); color: var(--text); }
+  button.danger { background: transparent; color: var(--err); padding-left: 8px; padding-right: 8px; }
+  button.link {
+    background: none; color: var(--accent); min-height: 32px; padding: 0 4px; font-weight: 600;
+  }
+  button.danger-solid { background: var(--err); color: #fff; }
+  #signOutConfirm { border-top: 1px solid var(--line); }
+  .buttons { display: flex; gap: 8px; }
+  .buttons button { flex: 1; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.wide { width: 100%; }
+
+  select, input[type="time"] {
+    font: inherit; min-height: 44px; padding: 8px 12px; border: 0; border-radius: 10px;
+    background: var(--field); color: var(--text); max-width: 55%;
+  }
+  select { appearance: auto; }
+
+  .switch { position: relative; flex: 0 0 auto; width: 52px; height: 32px; }
+  .switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; z-index: 1; cursor: pointer; }
+  .switch span {
+    position: absolute; inset: 0; border-radius: 16px; background: var(--field);
+    border: 1px solid var(--line); transition: background .15s;
+  }
+  .switch span::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 26px; height: 26px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); transition: transform .15s;
+  }
+  .switch input:checked + span { background: var(--accent); border-color: var(--accent); }
+  .switch input:checked + span::after { transform: translateX(20px); }
+  .switch input:focus-visible + span, select:focus-visible, input[type="time"]:focus-visible, button:focus-visible {
+    outline: 3px solid var(--accent); outline-offset: 2px;
+  }
+  .row.tap { cursor: pointer; }
+
+  .seg { display: flex; gap: 4px; padding: 4px; background: var(--field); border-radius: 12px; }
+  .seg label { flex: 1; position: relative; }
+  .seg input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; z-index: 1; cursor: pointer; }
+  .seg span {
+    display: flex; align-items: center; justify-content: center; min-height: 44px; border-radius: 9px;
+    font-weight: 600; color: var(--muted); text-align: center; padding: 0 6px;
+  }
+  .seg input:checked + span { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, .2); }
+  .seg input:focus-visible + span { outline: 3px solid var(--accent); }
+  .block > .seg + .note, .block > .label + .seg { margin-top: 10px; }
+
+  .code {
+    font: 700 34px/1.1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .06em;
+    text-align: center; padding: 8px 0 4px; user-select: all; -webkit-user-select: all;
+  }
+  .center { text-align: center; }
+  .muted { color: var(--muted); }
+  .stack > * + * { margin-top: 12px; }
+  .url { word-break: break-all; font-size: 13px; color: var(--muted); user-select: all; -webkit-user-select: all; }
+
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; background: var(--muted); }
+  .dot.ok { background: var(--ok); }
+  .dot.warn { background: var(--warn); }
+  .dot.err { background: var(--err); }
+  .value { color: var(--muted); text-align: right; }
+  .hint { margin: 0; padding: 12px 16px; background: var(--notice-bg); color: var(--notice-text); font-size: 14px; }
+
+  #notice, #pluginPanel .card { padding: 16px; }
+  .panel-title { margin: 0 0 8px; font-size: 18px; font-weight: 700; text-transform: none; letter-spacing: 0; color: var(--text); }
+  #pluginPanel { margin-top: 24px; }
+  #pluginPanel ol { margin: 8px 0 16px; padding-left: 22px; }
+  #pluginPanel li + li { margin-top: 4px; }
+
+  footer { margin: 32px 0 8px; text-align: center; color: var(--muted); font-size: 13px; }
+  footer a { color: var(--accent); font-weight: 600; font-size: 15px; }
+  .spinner {
+    display: inline-block; width: 16px; height: 16px; margin-right: 8px; vertical-align: -3px;
+    border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } .switch span, .switch span::after { transition: none; } }
+
+  #bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    background: var(--bg); border-top: 1px solid var(--line);
+  }
+  #bar button { display: flex; max-width: 560px; margin: 0 auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Simkl Timeline</h1>
+  <div id="save" role="status" aria-live="polite"></div>
+</header>
+
+<main>
+  <div id="loading" class="center muted" style="margin-top:48px"><span class="spinner"></span>Connecting to the plugin…</div>
+
+  <div id="pluginPanel" hidden>
+    <div class="card">
+      <h2 class="panel-title" id="pluginTitle">Plugins are not available</h2>
+      <p id="pluginText">Simkl Timeline needs plugins, which are part of Pebble app 1.18 and later.</p>
+      <ol id="pluginSteps">
+        <li>Update the Pebble app to version 1.18 or later.</li>
+        <li>Open Settings → Plugins and turn plugins on.</li>
+        <li>Open this page again.</li>
+      </ol>
+      <button id="retry" type="button" class="wide">Try again</button>
+    </div>
+  </div>
+
+  <div id="app" hidden>
+    <div id="notice" class="card" role="alert" hidden></div>
+
+    <section id="accountSection">
+      <h2>Simkl account</h2>
+      <div class="card">
+        <div id="signedIn" hidden>
+          <div class="row">
+            <div class="label">Signed in as<small id="accountName"></small></div>
+            <button id="signOut" type="button" class="danger">Sign out</button>
+          </div>
+          <div class="block stack" id="signOutConfirm" hidden>
+            <p>Sign out and remove the pins this app added?</p>
+            <div class="buttons">
+              <button id="signOutYes" type="button" class="danger-solid">Sign out</button>
+              <button id="signOutNo" type="button" class="secondary">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="signedOut" class="block stack" hidden>
+          <div id="connectIntro" class="stack">
+            <p>Connect your Simkl account to see upcoming episodes and movie releases from your lists.</p>
+            <button id="connect" type="button" class="wide">Connect Simkl</button>
+          </div>
+          <div id="signinBox" class="stack" hidden>
+            <p class="center muted">Enter this code at Simkl:</p>
+            <div class="code" id="userCode" aria-label="Sign-in code"></div>
+            <button id="openSimkl" type="button" class="wide">Open Simkl</button>
+            <p class="center muted" id="signinHelp"></p>
+            <p class="url center" id="signinUrl" hidden></p>
+            <p class="center" id="countdown" role="timer"></p>
+            <button id="cancelSignin" type="button" class="secondary wide">Cancel</button>
+          </div>
+          <p id="signinMessage" class="center" role="alert" hidden></p>
+        </div>
+      </div>
+    </section>
+
+    <div id="settings">
+      <section>
+        <h2>What to show</h2>
+        <div class="card">
+          <label class="row tap"><span class="label">TV shows</span><span class="switch"><input type="checkbox" id="type-tv"><span></span></span></label>
+          <label class="row tap"><span class="label">Anime</span><span class="switch"><input type="checkbox" id="type-anime"><span></span></span></label>
+          <label class="row tap"><span class="label">Movies</span><span class="switch"><input type="checkbox" id="type-movies"><span></span></span></label>
+        </div>
+        <div class="card" style="margin-top:12px">
+          <label class="row tap"><span class="label">Watching</span><span class="switch"><input type="checkbox" id="list-watching"><span></span></span></label>
+          <label class="row tap"><span class="label">Plan to Watch</span><span class="switch"><input type="checkbox" id="list-plantowatch"><span></span></span></label>
+          <label class="row tap"><span class="label">On Hold</span><span class="switch"><input type="checkbox" id="list-hold"><span></span></span></label>
+        </div>
+        <p class="note">Lists apply to TV shows and anime. Movies always use Plan to Watch.</p>
+      </section>
+
+      <section>
+        <h2>Movie releases</h2>
+        <div class="card">
+          <div class="block">
+            <div class="label">Release type</div>
+            <div class="seg" role="radiogroup" aria-label="Release type">
+              <label><input type="radio" name="movieRelease" value="cinema"><span>Cinema</span></label>
+              <label><input type="radio" name="movieRelease" value="digital"><span>Digital</span></label>
+              <label><input type="radio" name="movieRelease" value="both"><span>Both</span></label>
+            </div>
+          </div>
+          <div class="row">
+            <label class="label" for="country">Country<small>Release dates come from this country.</small></label>
+            <select id="country"></select>
+          </div>
+          <div class="row">
+            <label class="label" for="movieTime">Time of day<small>For releases that only have a date.</small></label>
+            <input type="time" id="movieTime" required>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Timeline</h2>
+        <div class="card">
+          <div class="block">
+            <div class="label">Days ahead</div>
+            <div class="seg" role="radiogroup" aria-label="Days ahead">
+              <label><input type="radio" name="daysAhead" value="7"><span>7 days</span></label>
+              <label><input type="radio" name="daysAhead" value="14"><span>14 days</span></label>
+              <label><input type="radio" name="daysAhead" value="30"><span>30 days</span></label>
+            </div>
+          </div>
+          <div class="row">
+            <label class="label" for="reminder">Reminder</label>
+            <select id="reminder">
+              <option value="-1">Off</option>
+              <option value="0">At start</option>
+              <option value="5">5 min before</option>
+              <option value="15">15 min before</option>
+              <option value="30">30 min before</option>
+              <option value="60">1 hour before</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Background sync</h2>
+        <div class="card">
+          <div class="row">
+            <label class="label" for="sync1">Daily sync<small>The watch app updates the timeline at this time.</small></label>
+            <input type="time" id="sync1" required>
+          </div>
+          <label class="row tap"><span class="label">Second daily sync</span><span class="switch"><input type="checkbox" id="sync2on"><span></span></span></label>
+          <div class="row" id="sync2row" hidden>
+            <label class="label" for="sync2">Second sync time</label>
+            <input type="time" id="sync2" required>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <section id="statusSection">
+      <h2>Status</h2>
+      <div class="card">
+        <div class="row"><div class="label">State</div><div class="value"><span class="dot" id="stateDot"></span><span id="stateText"></span></div></div>
+        <p class="hint" id="stateHint" hidden></p>
+        <div class="row"><div class="label">Last sync</div><div class="value" id="lastSync">Never</div></div>
+        <div class="row"><div class="label">Pins on the timeline</div><div class="value" id="pinCount">0</div></div>
+        <div id="permRows"></div>
+        <div class="block"><button id="syncNow" type="button" class="secondary wide">Sync now</button></div>
+      </div>
+      <p class="note" id="syncResult" role="status" aria-live="polite"></p>
+    </section>
+
+    <footer>
+      <p><a id="simklLink" href="https://simkl.com">Powered by Simkl</a></p>
+      <p id="version"></p>
+    </footer>
+  </div>
+</main>
+
+<div id="bar"><button id="done" type="button" class="wide">Done</button></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var PLUGIN_WAIT_MS = 10000;
+  var SAVE_DELAY_MS = 700;
+  var SIMKL_URL = 'https://simkl.com';
+
+  var COUNTRIES = [
+    ['AR', 'Argentina'], ['AU', 'Australia'], ['AT', 'Austria'], ['BE', 'Belgium'], ['BR', 'Brazil'],
+    ['BG', 'Bulgaria'], ['CA', 'Canada'], ['CL', 'Chile'], ['CN', 'China'], ['CO', 'Colombia'],
+    ['HR', 'Croatia'], ['CZ', 'Czechia'], ['DK', 'Denmark'], ['EG', 'Egypt'], ['EE', 'Estonia'],
+    ['FI', 'Finland'], ['FR', 'France'], ['DE', 'Germany'], ['GR', 'Greece'], ['HK', 'Hong Kong'],
+    ['HU', 'Hungary'], ['IS', 'Iceland'], ['IN', 'India'], ['ID', 'Indonesia'], ['IE', 'Ireland'],
+    ['IL', 'Israel'], ['IT', 'Italy'], ['JP', 'Japan'], ['LV', 'Latvia'], ['LT', 'Lithuania'],
+    ['MY', 'Malaysia'], ['MX', 'Mexico'], ['NL', 'Netherlands'], ['NZ', 'New Zealand'], ['NG', 'Nigeria'],
+    ['NO', 'Norway'], ['PE', 'Peru'], ['PH', 'Philippines'], ['PL', 'Poland'], ['PT', 'Portugal'],
+    ['RO', 'Romania'], ['SA', 'Saudi Arabia'], ['SG', 'Singapore'], ['SK', 'Slovakia'], ['SI', 'Slovenia'],
+    ['ZA', 'South Africa'], ['KR', 'South Korea'], ['ES', 'Spain'], ['SE', 'Sweden'], ['CH', 'Switzerland'],
+    ['TW', 'Taiwan'], ['TH', 'Thailand'], ['TR', 'Turkey'], ['UA', 'Ukraine'], ['AE', 'United Arab Emirates'],
+    ['GB', 'United Kingdom'], ['US', 'United States'], ['VN', 'Vietnam']
+  ];
+
+  var DEFAULTS = {
+    types: { tv: true, anime: true, movies: true },
+    lists: { watching: true, plantowatch: true, hold: false },
+    movieRelease: 'cinema', country: '', movieTime: '09:00', daysAhead: 14, reminder: -1,
+    syncTimes: [360, -1]
+  };
+
+  var STATE_LABELS = {
+    ok: ['Working', 'ok'], signed_out: ['Signed out', 'warn'], permission: ['Needs permission', 'err'],
+    offline: ['Offline', 'warn'], needs_update: ['Needs the Pebble app update', 'err'], error: ['Error', 'err']
+  };
+  var PERMISSION_NAMES = { simkl: 'Simkl (api.simkl.com)', cdn: 'Schedule (data.simkl.in)', timeline: 'Timeline' };
+
+  function $(id) { return document.getElementById(id); }
+
+  var app = {
+    account: null, signin: null, settings: null, status: null, permissions: null, version: '',
+    saving: false, dirty: false, saveAgain: false, saveTimer: null, syncing: false,
+    pluginReady: false, signinToken: 0, signinTimers: []
+  };
+
+  // Plugin link
+
+  function send(message) {
+    return Promise.resolve(Pebble.sendMessage('plugin', message));
+  }
+
+  function errorText(err) {
+    var text = err && (err.message || err.error) ? (err.message || err.error) : String(err || '');
+    return text || 'Something went wrong.';
+  }
+
+  function readyTargets() {
+    try {
+      return Array.prototype.slice.call(Pebble.readyTargets ? Pebble.readyTargets() : []);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // The watch app's JavaScript runs only while the app is open; when it does, let it show the change.
+  function notifyWatch() {
+    if (readyTargets().indexOf('pkjs') < 0) return;
+    Promise.resolve().then(function () { return Pebble.sendMessage('pkjs', { type: 'refresh' }); })
+      .catch(function () {});
+  }
+
+  function waitForPlugin() {
+    return new Promise(function (resolve) {
+      if (app.pluginReady || readyTargets().indexOf('plugin') >= 0) {
+        app.pluginReady = true;
+        resolve(true);
+        return;
+      }
+      var timer = setTimeout(function () { app.onReady = null; resolve(false); }, PLUGIN_WAIT_MS);
+      app.onReady = function () { clearTimeout(timer); app.onReady = null; resolve(true); };
+    });
+  }
+
+  function show(id, visible) { $(id).hidden = !visible; }
+
+  // Formatting
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function minutesToTime(m) { return pad(Math.floor(m / 60)) + ':' + pad(m % 60); }
+  function timeToMinutes(t) {
+    var m = /^(\d{1,2}):(\d{2})/.exec(t || '');
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  }
+
+  function relativeTime(ms) {
+    var diff = Math.max(0, Date.now() - ms);
+    var minutes = Math.round(diff / 60000);
+    if (minutes < 1) return 'Just now';
+    if (minutes < 60) return minutes + (minutes === 1 ? ' minute ago' : ' minutes ago');
+    var hours = Math.round(minutes / 60);
+    if (hours < 24) return hours + (hours === 1 ? ' hour ago' : ' hours ago');
+    var days = Math.round(hours / 24);
+    return days + (days === 1 ? ' day ago' : ' days ago');
+  }
+
+  // Settings form
+
+  function buildCountries() {
+    var select = $('country');
+    var auto = document.createElement('option');
+    auto.value = '';
+    auto.textContent = 'Automatic';
+    select.appendChild(auto);
+    COUNTRIES.forEach(function (c) {
+      var o = document.createElement('option');
+      o.value = c[0];
+      o.textContent = c[1];
+      select.appendChild(o);
+    });
+  }
+
+  function setRadio(name, value) {
+    var inputs = document.querySelectorAll('input[name="' + name + '"]');
+    for (var i = 0; i < inputs.length; i++) inputs[i].checked = inputs[i].value === String(value);
+  }
+
+  function getRadio(name, fallback) {
+    var checked = document.querySelector('input[name="' + name + '"]:checked');
+    return checked ? checked.value : fallback;
+  }
+
+  function fillSettings(s) {
+    var merged = Object.assign({}, DEFAULTS, s || {});
+    var types = Object.assign({}, DEFAULTS.types, merged.types);
+    var lists = Object.assign({}, DEFAULTS.lists, merged.lists);
+    $('type-tv').checked = !!types.tv;
+    $('type-anime').checked = !!types.anime;
+    $('type-movies').checked = !!types.movies;
+    $('list-watching').checked = !!lists.watching;
+    $('list-plantowatch').checked = !!lists.plantowatch;
+    $('list-hold').checked = !!lists.hold;
+    setRadio('movieRelease', merged.movieRelease);
+    var country = $('country');
+    if (merged.country && !country.querySelector('option[value="' + merged.country + '"]')) {
+      var extra = document.createElement('option');
+      extra.value = merged.country;
+      extra.textContent = merged.country;
+      country.appendChild(extra);
+    }
+    country.value = merged.country || '';
+    $('movieTime').value = merged.movieTime;
+    setRadio('daysAhead', merged.daysAhead);
+    $('reminder').value = String(merged.reminder);
+    var times = merged.syncTimes || DEFAULTS.syncTimes;
+    $('sync1').value = minutesToTime(times[0] >= 0 ? times[0] : 360);
+    var second = typeof times[1] === 'number' && times[1] >= 0;
+    $('sync2on').checked = second;
+    $('sync2').value = minutesToTime(second ? times[1] : 1080);
+    show('sync2row', second);
+  }
+
+  function readSettings() {
+    var first = timeToMinutes($('sync1').value);
+    var second = timeToMinutes($('sync2').value);
+    var movieTime = $('movieTime').value;
+    return Object.assign({}, app.settings || {}, {
+      types: { tv: $('type-tv').checked, anime: $('type-anime').checked, movies: $('type-movies').checked },
+      lists: { watching: $('list-watching').checked, plantowatch: $('list-plantowatch').checked, hold: $('list-hold').checked },
+      movieRelease: getRadio('movieRelease', 'cinema'),
+      country: $('country').value,
+      movieTime: /^\d{2}:\d{2}$/.test(movieTime) ? movieTime : (app.settings && app.settings.movieTime) || DEFAULTS.movieTime,
+      daysAhead: Number(getRadio('daysAhead', 14)),
+      reminder: Number($('reminder').value),
+      syncTimes: [
+        first === null ? 360 : first,
+        $('sync2on').checked ? (second === null ? 1080 : second) : -1
+      ]
+    });
+  }
+
+  // Autosave
+
+  function setSave(kind, text) {
+    var el = $('save');
+    el.className = kind;
+    el.textContent = text;
+    if (kind === 'error') {
+      var retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'link';
+      retry.textContent = 'Retry';
+      retry.onclick = function () { flushSave(); };
+      el.appendChild(retry);
+    }
+  }
+
+  function changed() {
+    app.dirty = true;
+    $('sync2row').hidden = !$('sync2on').checked;
+    setSave('', 'Unsaved changes');
+    clearTimeout(app.saveTimer);
+    app.saveTimer = setTimeout(flushSave, SAVE_DELAY_MS);
+  }
+
+  function flushSave() {
+    clearTimeout(app.saveTimer);
+    if (app.saving) { app.saveAgain = true; return Promise.resolve(); }
+    if (!app.dirty) return Promise.resolve();
+    app.dirty = false;
+    app.saving = true;
+    var settings = readSettings();
+    setSave('', 'Saving…');
+    $('done').textContent = 'Saving…';
+    return send({ type: 'saveSettings', settings: settings }).then(function (res) {
+      if (!res || res.ok === false || res.error) throw new Error(res && res.error ? res.error : 'The plugin did not accept the settings.');
+      app.settings = settings;
+      if (res.status) { app.status = res.status; renderStatus(); }
+      showNotice('');
+      setSave('saved', 'Saved');
+      notifyWatch();
+    }).catch(function (err) {
+      app.dirty = true;
+      showNotice('Your changes were not saved: ' + errorText(err));
+      setSave('error', 'Not saved');
+    }).then(function () {
+      app.saving = false;
+      $('done').textContent = 'Done';
+      if (app.saveAgain) { app.saveAgain = false; return flushSave(); }
+    });
+  }
+
+  // Status
+
+  function renderStatus() {
+    var status = app.status;
+    var signedOut = !app.account;
+    var key = signedOut ? 'signed_out' : (status && status.state) || 'ok';
+    var label = STATE_LABELS[key] || STATE_LABELS.error;
+    $('stateDot').className = 'dot ' + label[1];
+    $('stateText').textContent = !signedOut && !status ? 'Waiting for the first sync' : label[0];
+
+    var hint = '';
+    var message = status && status.message ? status.message : '';
+    if (key === 'signed_out') hint = 'Connect your Simkl account above.';
+    else if (key === 'permission') hint = (message ? message + ' ' : '') + 'Open the Simkl Timeline page in the Pebble app and allow the permissions it asks for.';
+    else if (key === 'needs_update') hint = 'Update the Pebble app to version 1.18 or later, then turn on plugins in Settings → Plugins.';
+    else if (key === 'offline') hint = 'Simkl could not be reached. Check your phone\'s internet connection, then tap Sync now.';
+    else if (key === 'error') hint = message || 'The last sync failed. Tap Sync now to try again.';
+    $('stateHint').textContent = hint;
+    show('stateHint', !!hint);
+
+    // Being signed out isn't a failed sync, so it doesn't read as one.
+    $('lastSync').textContent = status && status.ok && status.at ? relativeTime(status.at) :
+      (status && status.at && key !== 'signed_out' ? 'Failed ' + relativeTime(status.at).toLowerCase() : 'Never');
+    $('pinCount').textContent = String(status && typeof status.pinCount === 'number' ? status.pinCount : 0);
+
+    var rows = $('permRows');
+    rows.textContent = '';
+    var perms = app.permissions || {};
+    Object.keys(PERMISSION_NAMES).forEach(function (name) {
+      var value = perms[name];
+      if (value === 'granted' || !value) return;
+      var row = document.createElement('div');
+      row.className = 'row';
+      var l = document.createElement('div');
+      l.className = 'label';
+      l.textContent = PERMISSION_NAMES[name];
+      var v = document.createElement('div');
+      v.className = 'value';
+      v.textContent = value === 'denied' ? 'Turned off' : (value === 'prompt' ? 'Needs approval' : 'Unknown');
+      row.appendChild(l);
+      row.appendChild(v);
+      rows.appendChild(row);
+    });
+    $('syncNow').disabled = signedOut || app.syncing;
+  }
+
+  function syncNow() {
+    if (app.syncing) return;
+    app.syncing = true;
+    var button = $('syncNow');
+    button.disabled = true;
+    button.textContent = 'Syncing…';
+    $('syncResult').textContent = '';
+    flushSave().then(function () { return send({ type: 'syncNow' }); }).then(function (res) {
+      if (res && res.status) app.status = res.status;
+      if (!res || res.error) throw new Error(res && res.error);
+      $('syncResult').textContent = res.ok === false ? 'The sync did not finish. See the state above.' : 'Synced.';
+    }).catch(function (err) {
+      $('syncResult').textContent = 'Sync failed: ' + errorText(err);
+    }).then(function () {
+      app.syncing = false;
+      notifyWatch();
+      button.textContent = 'Sync now';
+      refreshState(true);
+    });
+  }
+
+  // Account and sign-in
+
+  function clearSigninTimers() {
+    app.signinToken++;
+    app.signinTimers.forEach(function (t) { clearTimeout(t); clearInterval(t); });
+    app.signinTimers = [];
+  }
+
+  function signinMessage(text) {
+    $('signinMessage').textContent = text;
+    show('signinMessage', !!text);
+  }
+
+  function renderAccount() {
+    var account = app.account;
+    show('signedIn', !!account);
+    show('signedOut', !account);
+    show('signOutConfirm', false);
+    show('signOut', true);
+    if (account) {
+      $('accountName').textContent = account.name || 'Simkl user';
+      clearSigninTimers();
+    }
+    show('settings', !!account);
+  }
+
+  function showSignin(signin) {
+    clearSigninTimers();
+    var token = app.signinToken;
+    signinMessage('');
+    show('connectIntro', false);
+    show('signinBox', true);
+    $('userCode').textContent = signin.userCode;
+    var url = signin.uriComplete || signin.uri || SIMKL_URL;
+    var canOpen = typeof Pebble.openUrl === 'function';
+    show('openSimkl', canOpen);
+    $('signinHelp').textContent = canOpen
+      ? 'Or go to ' + (signin.uri || 'simkl.com/pin') + ' on any device and type the code.'
+      : 'Go to the link below, or to ' + (signin.uri || 'simkl.com/pin') + ', and type the code.';
+    $('signinUrl').textContent = url;
+    show('signinUrl', !canOpen);
+    $('openSimkl').onclick = function () {
+      try {
+        Promise.resolve(Pebble.openUrl(url)).catch(function () { show('signinUrl', true); });
+      } catch (e) {
+        show('signinUrl', true);
+      }
+    };
+
+    function tick() {
+      var left = Math.max(0, Math.round((signin.expiresAt - Date.now()) / 1000));
+      $('countdown').textContent = 'Code expires in ' + Math.floor(left / 60) + ':' + pad(left % 60);
+      if (left === 0 && token === app.signinToken) endSignin('The code expired. Get a new one.');
+    }
+    tick();
+    app.signinTimers.push(setInterval(tick, 1000));
+
+    var interval = Math.max(1, Number(signin.interval) || 5);
+    var failures = 0;
+    function schedule() {
+      app.signinTimers.push(setTimeout(poll, interval * 1000));
+    }
+    function poll() {
+      if (token !== app.signinToken) return;
+      send({ type: 'signinPoll' }).then(function (res) {
+        if (token !== app.signinToken) return;
+        var state = res && res.state;
+        if (state === 'pending') { failures = 0; schedule(); }
+        else if (state === 'approved') { clearSigninTimers(); refreshState(false); notifyWatch(); }
+        else if (state === 'expired') endSignin('The code expired. Get a new one.');
+        else if (++failures < 3) schedule();
+        else endSignin('Sign-in failed: ' + errorText(res && res.error ? res : 'Could not reach Simkl.'));
+      }).catch(function (err) {
+        if (token !== app.signinToken) return;
+        if (++failures < 3) schedule();
+        else endSignin('Sign-in failed: ' + errorText(err));
+      });
+    }
+    schedule();
+  }
+
+  function endSignin(message) {
+    clearSigninTimers();
+    show('signinBox', false);
+    show('connectIntro', true);
+    $('connect').textContent = 'Get a new code';
+    signinMessage(message);
+  }
+
+  function startSignin() {
+    var button = $('connect');
+    button.disabled = true;
+    signinMessage('');
+    send({ type: 'signinStart' }).then(function (res) {
+      if (!res || res.error || !res.signin) throw new Error(res && res.error ? res.error : 'Simkl did not give a code.');
+      showSignin(res.signin);
+    }).catch(function (err) {
+      signinMessage('Could not start sign-in: ' + errorText(err));
+    }).then(function () { button.disabled = false; });
+  }
+
+  function signOut() {
+    show('signOutConfirm', false);
+    $('signOut').disabled = true;
+    send({ type: 'signout' }).then(function (res) {
+      if (!res || res.error || res.ok === false) throw new Error(res && res.error);
+      notifyWatch();
+      return refreshState(false);
+    }).catch(function (err) {
+      showNotice('Could not sign out: ' + errorText(err));
+    }).then(function () { $('signOut').disabled = false; });
+  }
+
+  // State
+
+  function showNotice(text) {
+    $('notice').textContent = text;
+    show('notice', !!text);
+  }
+
+  function applyState(state, keepForm) {
+    app.account = state.account || null;
+    app.signin = state.signin || null;
+    app.status = state.status || null;
+    app.permissions = state.permissions || null;
+    app.version = state.version || '';
+    if (!keepForm || !app.dirty) {
+      app.settings = state.settings || DEFAULTS;
+      if (!app.dirty) fillSettings(app.settings);
+    }
+    $('version').textContent = app.version ? 'Version ' + app.version : '';
+    renderAccount();
+    if (!app.account && app.signin && app.signin.expiresAt > Date.now() && $('signinBox').hidden) showSignin(app.signin);
+    renderStatus();
+  }
+
+  function refreshState(keepForm) {
+    return send({ type: 'state' }).then(function (state) {
+      if (!state || state.error) throw new Error(state && state.error ? state.error : 'No answer from the plugin.');
+      showNotice('');
+      applyState(state, keepForm);
+    }).catch(function (err) {
+      showNotice('Could not read the plugin state: ' + errorText(err));
+    });
+  }
+
+  // Start up
+
+  function showPluginMissing() {
+    show('loading', false);
+    show('app', false);
+    show('bar', true);
+    var hasPebble = typeof Pebble !== 'undefined';
+    $('pluginTitle').textContent = hasPebble ? 'The plugin did not answer' : 'Open this page from the Pebble app';
+    $('pluginText').textContent = hasPebble
+      ? 'Simkl Timeline needs plugins, which are part of Pebble app 1.18 and later. They have to be turned on.'
+      : 'This settings page only works inside the Pebble app.';
+    show('pluginSteps', hasPebble);
+    show('retry', hasPebble);
+    show('pluginPanel', true);
+  }
+
+  function boot() {
+    show('pluginPanel', false);
+    show('loading', true);
+    if (typeof Pebble === 'undefined') { showPluginMissing(); return; }
+    waitForPlugin().then(function (ready) {
+      if (!ready) { showPluginMissing(); return; }
+      return send({ type: 'state' }).then(function (state) {
+        if (!state || state.error) throw new Error(state && state.error ? state.error : 'No answer from the plugin.');
+        show('loading', false);
+        show('app', true);
+        applyState(state, false);
+      }).catch(function (err) {
+        showPluginMissing();
+        $('pluginText').textContent = 'The plugin did not answer: ' + errorText(err) + ' Make sure plugins are on (Pebble app 1.18 or later, Settings → Plugins).';
+      });
+    });
+  }
+
+  function done() {
+    var button = $('done');
+    button.disabled = true;
+    flushSave().then(function () {
+      if (!app.dirty) { location.href = 'pebblejs://close#'; return; }
+      button.disabled = false;
+    });
+  }
+
+  function init() {
+    buildCountries();
+    var inputs = document.querySelectorAll('#settings input, #settings select');
+    for (var i = 0; i < inputs.length; i++) inputs[i].addEventListener('change', changed);
+    $('connect').onclick = startSignin;
+    $('cancelSignin').onclick = function () { clearSigninTimers(); show('signinBox', false); show('connectIntro', true); };
+    $('signOut').onclick = function () { show('signOut', false); show('signOutConfirm', true); };
+    $('signOutNo').onclick = function () { show('signOut', true); show('signOutConfirm', false); };
+    $('signOutYes').onclick = signOut;
+    $('syncNow').onclick = syncNow;
+    $('retry').onclick = boot;
+    $('done').onclick = done;
+    $('simklLink').onclick = function (e) {
+      e.preventDefault();
+      if (typeof Pebble !== 'undefined' && typeof Pebble.openUrl === 'function') Pebble.openUrl(SIMKL_URL);
+    };
+    if (typeof Pebble !== 'undefined') {
+      Pebble.addEventListener('ready', function (e) {
+        if (e && e.target === 'plugin') { app.pluginReady = true; if (app.onReady) app.onReady(); }
+      });
+    }
+    boot();
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

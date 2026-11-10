@@ -1,0 +1,173 @@
+{
+  "name": "simkl-timeline",
+  "author": "Sylonin",
+  "version": "1.0.0",
+  "description": "Puts upcoming episodes and movie releases from your Simkl lists on the Pebble timeline.",
+  "keywords": [
+    "pebble-app"
+  ],
+  "private": true,
+  "scripts": {
+    "test": "node --test test/*.test.cjs"
+  },
+  "dependencies": {
+    "qrcode-generator": "1.4.4"
+  },
+  "pebble": {
+    "displayName": "Simkl Timeline",
+    "uuid": "4b7b70e6-67aa-4071-a811-2c4f6cfa316f",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "aplite",
+      "basalt",
+      "chalk",
+      "diorite",
+      "emery",
+      "flint",
+      "gabbro"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "configPage": "src/config.html",
+    "usesPermissions": [
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "api.simkl.com"
+          ]
+        },
+        "reason": "To sign in to Simkl, read your lists and mark episodes watched",
+        "required": true
+      },
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "data.simkl.in"
+          ]
+        },
+        "reason": "To get the airing schedule for the shows on your lists",
+        "required": true
+      },
+      {
+        "name": "Timeline",
+        "reason": "To add upcoming episodes and releases to your timeline",
+        "required": true
+      }
+    ],
+    "plugin": {
+      "description": "Keeps the timeline pins for the user's Simkl lists (Watching, Plan to Watch, On Hold) up to date: new TV and anime episodes, and movie releases in cinemas or digitally. The Simkl Timeline watch app starts a sync, and each pin's Mark watched button records the episode or movie in the user's Simkl history.",
+      "script": "src/plugin/index.js",
+      "sources": [],
+      "actions": [
+        {
+          "name": "sync",
+          "description": "Refresh the upcoming airings from Simkl and update the timeline pins. Answers 'more' while work is left; call again until it answers 'done'.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "scheduled",
+                  "open",
+                  "manual",
+                  "settings"
+                ]
+              }
+            },
+            "required": [
+              "reason"
+            ]
+          }
+        },
+        {
+          "name": "mark_watched",
+          "description": "Record an episode or movie in the user's Simkl history and remove its timeline pin.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "tv",
+                  "anime",
+                  "movie"
+                ]
+              },
+              "simkl": {
+                "type": "integer"
+              },
+              "season": {
+                "type": "integer"
+              },
+              "episode": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "simkl"
+            ]
+          }
+        },
+        {
+          "name": "signin_start",
+          "description": "Start signing in to Simkl: gets a code for the user to approve at simkl.com/pin.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        },
+        {
+          "name": "signin_poll",
+          "description": "Check whether the user approved the sign-in code. Answers 'pending', 'approved' or 'expired'.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        }
+      ]
+    },
+    "messageKeys": [
+      "Cmd",
+      "Reason",
+      "State",
+      "Text",
+      "LastSync",
+      "Count",
+      "Index",
+      "ItemTime",
+      "ItemFlags",
+      "ItemRuntime",
+      "ItemSimkl",
+      "ItemSeason",
+      "ItemEpisode",
+      "ItemTitle",
+      "ItemSub",
+      "ItemDetail",
+      "ItemNetwork",
+      "Code",
+      "Expires",
+      "QrSize",
+      "QrData",
+      "SyncTime1",
+      "SyncTime2"
+    ],
+    "resources": {
+      "media": [
+        {
+          "type": "bitmap",
+          "name": "IMAGE_MENU_ICON",
+          "file": "images/menu_icon.png",
+          "menuIcon": true
+        }
+      ]
+    }
+  }
+}
