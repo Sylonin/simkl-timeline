@@ -251,18 +251,16 @@ static int16_t prv_round_focused_min(void) {
 
 static int16_t prv_cell_height(MenuLayer *menu, MenuIndex *index, void *context) {
   const Section *sec = &s_sec[index->section];
-  const bool focused = menu_layer_is_index_selected(menu, index);
   switch (sec->type) {
     case SecDay: {
-      const Item *item = prv_item_at(index);
       if (!UI_ROUND) {
         return ui_title_h() + ui_small_h() + 8;
       }
-      if (!focused) {
+      if (!menu_layer_is_index_selected(menu, index)) {
         return ui_title_h() + 10;
       }
       int16_t h = ui_title_h() + ui_small_h() + 12;
-      if (ui_finale_text(item)) {
+      if (ui_finale_text(prv_item_at(index))) {
         h += ui_small_h();
       }
       return h > prv_round_focused_min() ? h : prv_round_focused_min();
@@ -349,8 +347,8 @@ static void prv_draw_item(GContext *ctx, const Layer *cell, const Item *item, bo
   }
   graphics_draw_text(ctx, sub, ui_small_font(), GRect(inset, y - 3, sub_w, ui_small_h() + 4),
                      GTextOverflowModeTrailingEllipsis, align, NULL);
-  y += ui_small_h();
   if (UI_ROUND && finale) {
+    y += ui_small_h();
     graphics_draw_text(ctx, finale, ui_small_font(), GRect(inset, y - 3, w, ui_small_h() + 4),
                        GTextOverflowModeTrailingEllipsis, align, NULL);
   }
@@ -362,8 +360,11 @@ static void prv_draw_text_row(GContext *ctx, const Layer *cell, const char *titl
   const int16_t inset = prv_inset();
   const int16_t w = bounds.size.w - 2 * inset;
   graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
-  const int16_t content = prv_text_row_height(title, body) - 10;
-  int16_t y = UI_ROUND ? (bounds.size.h - content) / 2 : 4;
+  int16_t y = 4;
+  if (UI_ROUND) {
+    const int16_t content = prv_text_row_height(title, body) - 10;
+    y = (bounds.size.h - content) / 2;
+  }
   if (title) {
     y += ui_text_block(ctx, title, ui_title_font(), inset, y, w, prv_align(), 400) + 2;
   }

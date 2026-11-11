@@ -49,7 +49,7 @@ static void prv_reload(AppGlanceReloadSession *session, size_t limit, void *cont
              (long)item->time);
     char tpl[TEMPLATE_MAX + 1];
     const size_t prefix_len = strlen(prefix);
-    strcpy(tpl, prefix);
+    memcpy(tpl, prefix, prefix_len + 1);
     // The prefix holds the template syntax itself, so only the item text is escaped.
     size_t used = prefix_len;
     used = prv_escape_append(tpl, used, TEMPLATE_MAX, item->title);
