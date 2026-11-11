@@ -1,0 +1,51 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": { "includes": ["src/**", "test/**", "*.json"] },
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "complexity": {
+        "useArrowFunction": "off",
+        "useOptionalChain": "off"
+      },
+      "correctness": {
+        "noInnerDeclarations": "off"
+      },
+      "style": {
+        "useTemplate": "off"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["src/plugin/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedGlobals": {
+              "level": "error",
+              "options": {
+                "deniedGlobals": {
+                  "setTimeout": "The plugin engine has no timers. Answer wait:<ms> or retryAfterMs and let the caller wait.",
+                  "setInterval": "The plugin engine has no timers. Answer wait:<ms> or retryAfterMs and let the caller wait.",
+                  "clearTimeout": "The plugin engine has no timers.",
+                  "clearInterval": "The plugin engine has no timers.",
+                  "navigator": "The plugin engine has no browser globals.",
+                  "window": "The plugin engine has no browser globals.",
+                  "self": "The plugin engine has no browser globals.",
+                  "document": "The plugin engine has no browser globals.",
+                  "location": "The plugin engine has no browser globals.",
+                  "localStorage": "On Android, PKJS overwrites the plugin's localStorage. Keep plugin state in Pebble.secureStorage."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

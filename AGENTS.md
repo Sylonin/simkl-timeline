@@ -15,7 +15,8 @@ The app needs the Core Devices Pebble app 1.18 or later with plugins turned on. 
 | `test/` | Node | Plugin tests. `world.cjs` is the fake phone and the fake Simkl. |
 | `package.json` | | Manifest: uuid, platforms, permissions, plugin actions, message keys, resources. |
 | `resources/images/`, `appstore/` | | Launcher icons and store icons (see Icons). |
-| `devenv.nix`, `devenv.yaml`, `.envrc` | | Dev shell: Node.js, pebble-tool, the emulator's libraries, git hooks. |
+| `devenv.nix`, `devenv.yaml`, `.envrc` | | Dev shell: Node.js, pebble-tool, the emulator's libraries, linters, git hooks. |
+| `.clang-tidy`, `biome.json` | | Linter settings for the C and the JS, HTML and CSS (see Linters). |
 
 ## Commands
 
@@ -23,11 +24,12 @@ The app needs the Core Devices Pebble app 1.18 or later with plugins turned on. 
 
 The shell has no host C compiler and unsets `CC` and `AR`, because waf would use them instead of the SDK's ARM compiler (`gcc: error: unrecognized command-line option '-mthumb'`). Don't add a C compiler to `devenv.nix`.
 
-`git commit` runs ripsecrets (a secret scanner) and treefmt (nixfmt) through prek. Run them on every file with `prek run --all-files`.
+`git commit` runs these hooks through prek: ripsecrets (a secret scanner), treefmt (nixfmt), Biome on staged JS, JSON and HTML files, and clang-tidy when a file in `src/c` changes. Run them on every file with `prek run --all-files`.
 
 ```sh
 pebble build                                  # all seven platforms; runs npm install first
 npm test                                      # plugin tests: node --test test/*.test.cjs
+lint                                          # clang-tidy on src/c, then Biome; lint-c alone takes file names
 pebble install --emulator emery               # Pebble Time 2
 pebble screenshot --emulator emery --no-open --scale 3 /tmp/shot.png
 pebble emu-button --emulator emery click select   # back, up, select, down; --duration, --repeat
@@ -41,6 +43,13 @@ Setup problems seen on this machine:
 - The first install after the emulator starts often fails with `Connection refused`. Retry every 10 seconds until it prints `App install succeeded`.
 - `pebble logs --emulator emery` prints nothing through a pipe. Run it under a pty: `script -q -f -c "pebble logs --emulator emery" /tmp/logs.txt`.
 - After changing `messageKeys`, run `pebble clean` before building. waf doesn't regenerate `message_keys.auto.h`.
+
+### Linters
+
+- `lint-c` writes `compile_commands.json` with `pebble compile-commands` when the file is missing or out of date, then runs clang-tidy on each C file in parallel. It uses the unwrapped clang-tidy, which takes the ARM target and the SDK's newlib headers from the compiler path in that file.
+- The analysis covers emery only. Code that runs only on round or black-and-white watches (`UI_ROUND`, `PBL_IF_COLOR_ELSE`) isn't checked, and a value computed before `if (!UI_ROUND) return` looks like a dead store; compute it inside the round branch. To check another display group, run `pebble compile-commands --platform chalk` (or `diorite`), then `lint-c`, then `pebble compile-commands` to go back to emery.
+- `biome.json` turns off the rules that conflict with the `var` and function style: `useArrowFunction`, `useTemplate`, `useOptionalChain` and `noInnerDeclarations`. Name an unused catch binding `_e`. In `src/plugin`, `noRestrictedGlobals` reports the globals the plugin engine lacks, the same list `test/world.cjs` blocks.
+- Biome's formatter is off. Only nixfmt formats files.
 
 ## Verifying a change
 
@@ -100,6 +109,7 @@ Setup problems seen on this machine:
 
 - C: `#pragma once`; static functions start with `prv_`; public functions start with their module name (`model_`, `comm_`, `ui_`). Handle platform differences with `PBL_IF_ROUND_ELSE`, `PBL_IF_COLOR_ELSE` and `PBL_PLATFORM_*`.
 - PKJS and plugin: `var` and function declarations, no arrow functions. Match the existing style.
+- `pebble build` bundles `src/pkjs` with the SDK's webpack 1.15, whose parser accepts ES2015 only: no `async`/`await` and no `catch {}` without a binding. The plugin script goes into the .pbw unbundled, so it may use `async`/`await`.
 - Tests: CommonJS `*.test.cjs` files using `node:test`.
 - Commits: Conventional Commits, with a scope where one fits (`fix(plugin): …`).
 

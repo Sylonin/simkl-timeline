@@ -1,0 +1,19 @@
+# Run through `lint-c`, which first writes compile_commands.json with
+# `pebble compile-commands`. clang-tidy takes the ARM target and the SDK's
+# newlib headers from the arm-none-eabi-gcc path in that file.
+#
+# bugprone-narrowing-conversions is off: the Pebble API takes int16_t
+# coordinates (GRect, GPoint), so every computed position would be flagged.
+Checks: >-
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions
+WarningsAsErrors: "*"
+HeaderFilterRegex: "/src/c/"
+ExtraArgs:
+  # The SDK's compiler flags include GCC-only warning options.
+  - -Wno-unknown-warning-option
+  # pebble.h repeats a typedef, which C99 doesn't allow but GCC accepts.
+  - -Wno-typedef-redefinition

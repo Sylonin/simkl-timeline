@@ -40,7 +40,7 @@ Open the app's settings in the Pebble app.
 
 You need the Pebble SDK 4.44 or later, and Node.js with npm: `pebble build` runs `npm install` for the QR code library in `package.json`.
 
-With Nix, `devenv shell` (or direnv with the bundled `.envrc`) provides Node.js and pebble-tool. Run `pebble sdk install latest` once to get the SDK.
+With Nix, `devenv shell` (or direnv with the bundled `.envrc`) provides Node.js, pebble-tool and the linters. Run `pebble sdk install latest` once to get the SDK. `lint` runs clang-tidy on the C code and Biome on the JS, HTML and CSS.
 
 ```sh
 pebble build                       # all platforms
