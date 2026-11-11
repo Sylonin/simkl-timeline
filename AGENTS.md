@@ -15,10 +15,15 @@ The app needs the Core Devices Pebble app 1.18 or later with plugins turned on. 
 | `test/` | Node | Plugin tests. `world.cjs` is the fake phone and the fake Simkl. |
 | `package.json` | | Manifest: uuid, platforms, permissions, plugin actions, message keys, resources. |
 | `resources/images/`, `appstore/` | | Launcher icons and store icons (see Icons). |
+| `devenv.nix`, `devenv.yaml`, `.envrc` | | Dev shell: Node.js, pebble-tool, the emulator's libraries, git hooks. |
 
 ## Commands
 
-pebble-tool is installed with uv in `~/.local/bin`, with SDK 4.44. On this NixOS machine, run `pebble` and `npm` inside `nix shell nixpkgs#uv nixpkgs#nodejs -c …`.
+`devenv.nix` provides Node.js, pebble-tool 5.1.2 in a Python 3.12 venv, and the shared libraries that the emulator (qemu-pebble) loads through nix-ld. `.envrc` loads it with direnv, so run commands directly in this directory. pebble-tool keeps the SDK (4.44) in `~/.local/share/pebble-sdk`; on a new machine run `pebble sdk install latest` once.
+
+The shell has no host C compiler and unsets `CC` and `AR`, because waf would use them instead of the SDK's ARM compiler (`gcc: error: unrecognized command-line option '-mthumb'`). Don't add a C compiler to `devenv.nix`.
+
+`git commit` runs ripsecrets (a secret scanner) and treefmt (nixfmt) through prek. Run them on every file with `prek run --all-files`.
 
 ```sh
 pebble build                                  # all seven platforms; runs npm install first
@@ -32,11 +37,6 @@ pebble kill && pebble wipe                    # stop a stuck emulator and clear 
 
 Setup problems seen on this machine:
 
-- `gcc: error: unrecognized command-line option '-mthumb'`: `CC`, `AR` or `NIX_CFLAGS_COMPILE` from another dev shell replaced the SDK's ARM compiler. Unset them, then `pebble clean`.
-- The emulator (qemu-pebble) needs shared libraries through nix-ld:
-  ```sh
-  export NIX_LD_LIBRARY_PATH="$(nix build --no-link --print-out-paths nixpkgs#zlib nixpkgs#pixman nixpkgs#libpng nixpkgs#SDL2 nixpkgs#glib.out nixpkgs#alsa-lib nixpkgs#libpulseaudio | sed 's|$|/lib|' | tr '\n' ':')$NIX_LD_LIBRARY_PATH"
-  ```
 - Without a display, add `--vnc` to every command that takes `--emulator`.
 - The first install after the emulator starts often fails with `Connection refused`. Retry every 10 seconds until it prints `App install succeeded`.
 - `pebble logs --emulator emery` prints nothing through a pipe. Run it under a pty: `script -q -f -c "pebble logs --emulator emery" /tmp/logs.txt`.
