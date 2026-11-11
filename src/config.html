@@ -6,6 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>Simkl Timeline</title>
 <style>
+  /* biome-ignore-all lint/style/noDescendingSpecificity: rules are grouped by component, and the selectors it compares (.switch and .seg spans, #save and other buttons) never match the same element. */
   :root {
     color-scheme: light dark;
     --bg: #f1f1f5;
@@ -48,6 +49,7 @@
     font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
     padding-bottom: calc(88px + env(safe-area-inset-bottom));
   }
+  /* biome-ignore lint/complexity/noImportantStyles: the hidden attribute has to beat every display rule below, such as .row and button. */
   [hidden] { display: none !important; }
 
   header {
@@ -223,7 +225,7 @@
           </div>
           <div id="signinBox" class="stack" hidden>
             <p class="center muted">Enter this code at Simkl:</p>
-            <div class="code" id="userCode" aria-label="Sign-in code"></div>
+            <div class="code" id="userCode"></div>
             <button id="openSimkl" type="button" class="wide">Open Simkl</button>
             <p class="center muted" id="signinHelp"></p>
             <p class="url center" id="signinUrl" hidden></p>

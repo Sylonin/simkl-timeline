@@ -46,7 +46,7 @@ test('Plan to Watch and On Hold follow the settings, and an episode called "Epis
   w.setItem('shows', 1, 'Watching', 'watching');
   w.setItem('shows', 2, 'Planned', 'plantowatch');
   w.setItem('shows', 3, 'Held', 'hold');
-  [1, 2, 3].forEach((id) => w.tvEpisode(id, 1, 5, '2026-11-12T01:00:00Z'));
+  [1, 2, 3].forEach((id) => { w.tvEpisode(id, 1, 5, '2026-11-12T01:00:00Z'); });
   await w.syncAll('manual');
   assert.deepStrictEqual(w.pinIds(), ['tv-2-1-5', 'tv-3-1-5']);
   assert.strictEqual(w.store('upcoming').items[0].detail, '');
@@ -64,7 +64,7 @@ test('the pin window is two days back to the days-ahead setting, and the list fr
     5: NOW - 3 * HOUR, // in the list: exactly three hours back
     6: NOW - 3 * HOUR - 1000, // a pin, but not in the list
   };
-  Object.keys(eps).forEach((n) => w.tvEpisode(1, 1, Number(n), at(eps[n])));
+  Object.keys(eps).forEach((n) => { w.tvEpisode(1, 1, Number(n), at(eps[n])); });
   await w.syncAll('manual');
   assert.deepStrictEqual(w.pinIds(), ['tv-1-1-1', 'tv-1-1-3', 'tv-1-1-5', 'tv-1-1-6']);
   assert.deepStrictEqual(w.store('upcoming').items.map((i) => i.episode), [5, 3]);
@@ -226,7 +226,7 @@ test('old movies are not looked up, but one with an unknown year is', async () =
   w.setItem('movies', 1, 'Old', 'plantowatch', { year: 2019 });
   w.setItem('movies', 2, 'Last year', 'plantowatch', { year: 2025 });
   w.setItem('movies', 3, 'Unknown', 'plantowatch', { year: null });
-  [1, 2, 3].forEach((id) => w.setMovie(id, { dates: { US: [[3, '2026-11-20']] } }));
+  [1, 2, 3].forEach((id) => { w.setMovie(id, { dates: { US: [[3, '2026-11-20']] } }); });
   await w.syncAll('manual');
   assert.deepStrictEqual(w.paths('api.simkl.com').filter((p) => p.startsWith('GET /movies/')), ['GET /movies/2', 'GET /movies/3']);
 });

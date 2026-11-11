@@ -52,13 +52,13 @@ function load(key) {
   var raw;
   try {
     raw = localStorage.getItem(key);
-  } catch (e) {
+  } catch (_e) {
     return null;
   }
   if (raw === null || raw === undefined) return null;
   try {
     return JSON.parse(raw);
-  } catch (e2) {
+  } catch (_e) {
     return null;
   }
 }
@@ -244,7 +244,7 @@ function fetchData(callback) {
       try {
         data = JSON.parse(result.text);
         save('pkjs.data', data);
-      } catch (e) {
+      } catch (_e) {
         result = { ok: false, code: 'UNKNOWN', message: '' };
       }
     }
@@ -328,7 +328,7 @@ function itemFlags(item) {
 }
 
 function itemMessages() {
-  var items = data && data.items instanceof Array ? data.items.slice(0, MAX_ITEMS) : [];
+  var items = data && Array.isArray(data.items) ? data.items.slice(0, MAX_ITEMS) : [];
   var messages = [];
   for (var i = 0; i < items.length; i++) {
     var item = items[i];
@@ -507,7 +507,7 @@ function startSignin() {
       var qr;
       try {
         qr = makeQr(signin.uriComplete);
-      } catch (e) {
+      } catch (_e) {
         signinResult(2, 'Could not make the QR code. Use the code instead.');
         return;
       }

@@ -265,7 +265,7 @@ test('watch_data gives PKJS what the watch shows, and none of the secrets', asyn
   assert.deepStrictEqual(data.syncTimes, [420, 1200]);
   assert.deepStrictEqual(data.items.map((i) => i.pinId), ['tv-100-1-1']);
   const text = JSON.stringify(data);
-  ['at1', 'rt1'].forEach((secret) => assert.ok(!text.includes('"' + secret + '"'), secret));
+  ['at1', 'rt1'].forEach((secret) => { assert.ok(!text.includes('"' + secret + '"'), secret); });
 
   // A failed sync keeps the time of the last good one; signing out forgets it.
   w.hook = () => new TypeError('fetch failed');
@@ -380,7 +380,7 @@ test('signing out revokes the token and removes every pin, the tokens and the li
   assert.strictEqual(secureTokens(w), null);
   for (const key of ['account', 'plugin.lists', 'plugin.snapshot', 'upcoming', 'signin']) assert.strictEqual(w.store(key), null, key);
   assert.strictEqual(w.store('sync_status').state, 'signed_out');
-  Object.values(w.store('pins')).forEach((rec) => assert.strictEqual(rec.deleted, true));
+  Object.values(w.store('pins')).forEach((rec) => { assert.strictEqual(rec.deleted, true); });
   assert.strictEqual((await w.action('sync', { reason: 'manual' })).error.code, 'AUTH_REQUIRED');
 });
 

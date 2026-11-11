@@ -128,7 +128,7 @@ async function load(key, fallback) {
   try {
     var value = JSON.parse(raw);
     return value === null || value === undefined ? fallback : value;
-  } catch (e) {
+  } catch (_e) {
     return fallback;
   }
 }
@@ -147,7 +147,7 @@ async function readTokens() {
   try {
     var tokens = JSON.parse(raw);
     return tokens && tokens.access ? tokens : null;
-  } catch (e) {
+  } catch (_e) {
     return null;
   }
 }
@@ -258,7 +258,7 @@ async function permissionState(spec) {
   if (!Pebble.permissions || typeof Pebble.permissions.query !== 'function') return 'unknown';
   try {
     return await Pebble.permissions.query(spec.name);
-  } catch (e) {
+  } catch (_e) {
     return 'unknown';
   }
 }
@@ -337,14 +337,14 @@ async function readResponse(res) {
   var text = '';
   try {
     text = await res.text();
-  } catch (e) {
+  } catch (_e) {
     text = '';
   }
   var json = null;
   if (text) {
     try {
       json = JSON.parse(text);
-    } catch (e) {
+    } catch (_e) {
       json = null;
     }
   }
@@ -618,7 +618,7 @@ async function revokeToken(cx, token) {
   try {
     await http(cx, { host: API_HOST, path: '/oauth2/revoke', method: 'POST', form: { token: token } });
     return true;
-  } catch (e) {
+  } catch (_e) {
     return false;
   }
 }
@@ -917,7 +917,7 @@ async function resolveCountry(settings) {
         if (/^[A-Za-z]{2}$/.test(parts[i])) return parts[i].toUpperCase();
       }
     }
-  } catch (e) {
+  } catch (_e) {
     // The preference is a convenience; the next fallback is documented.
   }
   return 'US';
@@ -1079,7 +1079,7 @@ function buildItems(env) {
       var slug = meta.slug || listed.slug;
       var base = { kind: kind, simkl: e.i, title: title, network: meta.network || '', finale: e.f, release: null, link: siteLink(kind, e.i, slug) };
       var t = Date.parse(e.d);
-      if (isNaN(t)) return;
+      if (Number.isNaN(t)) return;
       if (kind === 'anime' && e.e === null) {
         // An anime film has a day, not a time. The file counts days in Japan, where these are released.
         var day = new Date(t + 9 * HOUR).toISOString().slice(0, 10);
@@ -1238,7 +1238,7 @@ async function reconcilePins(env, items) {
   return live;
 }
 
-async function pinsStep(cx, prog, settings) {
+async function pinsStep(_cx, prog, settings) {
   var now = Date.now();
   var watched = await load('plugin.watched', {});
   Object.keys(watched).forEach(function (k) { if (watched[k] < now - PIN_KEEP_MS) delete watched[k]; });
@@ -1404,7 +1404,7 @@ async function syncFully(reason, resume) {
     do {
       answer = await syncOnce(reason, cx);
     } while (answer === 'more');
-  } catch (e) {
+  } catch (_e) {
     // syncOnce stored the failure in sync_status.
   }
   return { status: await load('sync_status', null), retryAfterMs: waitOf(answer) || undefined };
@@ -1590,10 +1590,11 @@ Pebble.registerConfigHandler(async function (message, respond) {
         respond({ state: 'approved', account: await load('account', null), status: first.status, retryAfterMs: first.retryAfterMs });
         return;
       }
-      case 'signout':
+      case 'signout': {
         var cx = makeContext(true);
         respond(await withLock(cx, function () { return signOut(cx); }));
         return;
+      }
       case 'syncNow': {
         // resume carries on a run that had to wait, under the reason it started with.
         var reason = message.reason === 'settings' ? 'settings' : 'manual';

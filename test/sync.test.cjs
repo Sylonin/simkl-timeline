@@ -277,7 +277,7 @@ test('a long sync answers more, carries on where it stopped, and each request ha
   assert.strictEqual(answers[answers.length - 1], 'done');
   const counts = {};
   w.calls.forEach((c) => { counts[c.path] = (counts[c.path] || 0) + 1; });
-  Object.keys(counts).forEach((p) => assert.strictEqual(counts[p], 1, p + ' was requested ' + counts[p] + ' times'));
+  Object.keys(counts).forEach((p) => { assert.strictEqual(counts[p], 1, p + ' was requested ' + counts[p] + ' times'); });
   assert.deepStrictEqual(w.pinIds(), ['an-200-7', 'mv-300-cinema', 'tv-100-1-1']);
   assert.strictEqual(w.store('plugin.sync'), null);
   assert.strictEqual(w.store('sync_status').ok, true);
@@ -456,11 +456,11 @@ test('a lock nobody renewed for 30 seconds is taken over, and released when the 
 test('a run renews its lock as it goes, so a slow one is not taken over', async () => {
   const w = ready();
   w.latency = 5000;
-  let heldAtRequests = [];
+  const heldAtRequests = [];
   w.hook = () => { heldAtRequests.push(w.store('plugin.syncLock')); };
   await w.action('sync', { reason: 'manual' });
   assert.ok(heldAtRequests.length >= 3);
-  heldAtRequests.forEach((l, i) => assert.ok(l && l.until > w.calls[i].at, 'lock live at request ' + i));
+  heldAtRequests.forEach((l, i) => { assert.ok(l && l.until > w.calls[i].at, 'lock live at request ' + i); });
   assert.strictEqual(w.store('plugin.syncLock'), null, 'released when the invocation answers more');
 });
 
